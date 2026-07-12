@@ -24,10 +24,14 @@ export class Game {
     this.highlightPlayerId = null;
     this.particles = [];
     this.camera = { shake: 0, zoom: 1, focusX: WORLD.width / 2, focusY: WORLD.height / 2 };
+    this.netRipple = null;
     this.introTimer = 0;
     this.result = null;
     this.sound = new SoundEngine();
-    this.tutorial = { step: 'move', completed: new Set(), lastCueAt: 0 };
+    this.stadiumImage = new Image();
+    this.stadiumImage.src = `${import.meta.env.BASE_URL}assets/images/stadium-panorama.webp`;
+    this.tutorial = { step: 'move', completed: new Set(), voiced: new Set(), lastCueAt: 0 };
+    this.lastPraiseAt = -Infinity;
     this.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
     this.boundResize = () => this.resize();
@@ -67,6 +71,7 @@ export class Game {
     this.canvas.removeEventListener('pointerup', this.boundPointerUp);
     this.canvas.removeEventListener('pointercancel', this.boundPointerCancel);
     this.canvas.removeEventListener('contextmenu', this.boundContextMenu);
+    this.sound.stopMatchAmbience();
   }
 
   resize() {
@@ -142,12 +147,10 @@ export class Game {
     } else if (pointer.mode === 'pass' && this.screen === 'match') {
       if (this.match.passTo(pointer.targetId)) {
         this.completeTutorialStep('pass');
-        this.sound.play('pass');
       }
     } else if (pointer.mode === 'goal-shot' && this.screen === 'match') {
       if (this.match.shootAt(point.y, 0.92)) {
         this.completeTutorialStep('shoot');
-        this.sound.play('kick');
       }
     } else if (pointer.mode === 'aim' && this.screen === 'match') {
       const dx = point.x - pointer.start.x;
@@ -160,7 +163,6 @@ export class Game {
         const strength = clamp(dragCss / 130, 0.78, 1.08);
         if (this.match.shootAt(targetY, strength)) {
           this.completeTutorialStep('shoot');
-          this.sound.play('kick');
         }
       }
     } else if (pointer.mode === 'splash-play' && this.screen === 'splash') {
@@ -275,10 +277,12 @@ export class Game {
     this.screen = 'match';
     this.result = null;
     this.introTimer = this.reducedMotion ? 0.6 : 1.25;
-    this.tutorial = { step: 'move', completed: new Set(), lastCueAt: this.time };
+    this.tutorial = { step: 'move', completed: new Set(), voiced: new Set(), lastCueAt: this.time };
+    this.lastPraiseAt = -Infinity;
     this.particles.length = 0;
     this.camera = { shake: 0, zoom: 1, focusX: WORLD.width / 2, focusY: WORLD.height / 2 };
-    this.sound.play('whistle');
+    this.sound.startMatchAmbience();
+    this.sound.speak('letsGoUsa');
   }
 
   showSplash() {
@@ -287,6 +291,7 @@ export class Game {
     this.result = null;
     this.particles.length = 0;
     this.clearPointer();
+    this.sound.stopMatchAmbience();
   }
 
   selectOpponent(index) {
@@ -353,6 +358,7 @@ export class Game {
       this.introTimer = Math.max(0, this.introTimer - dt);
       if (this.introTimer <= 0) this.match.update(dt);
       for (const event of this.match.drainEvents()) this.handleMatchEvent(event);
+      this.updateTutorialAudio();
     }
     if (this.targetMarker) {
       this.targetMarker.life -= dt;
@@ -368,6 +374,10 @@ export class Game {
     this.particles = this.particles.filter((particle) => particle.life > 0);
     this.camera.shake = Math.max(0, this.camera.shake - dt * 2.4);
     this.camera.zoom += (1 - this.camera.zoom) * Math.min(1, dt * 2.5);
+    if (this.netRipple) {
+      this.netRipple.life -= dt;
+      if (this.netRipple.life <= 0) this.netRipple = null;
+    }
   }
 
   handleMatchEvent(event) {
@@ -376,14 +386,24 @@ export class Game {
       const ball = this.match.ball;
       this.spawnTurf(ball.x, ball.y, event.team === 'usa' ? COLORS.brightBlue : COLORS.gold);
       if (event.kind === 'shot' && !this.reducedMotion) this.camera.shake = 0.18;
+      if (event.kind === 'pass' && event.team === 'usa' && this.time - this.lastPraiseAt > 8) {
+        this.sound.speak('greatPass');
+        this.lastPraiseAt = this.time;
+      }
     } else if (event.type === 'save') {
       this.sound.play('save');
       this.spawnStars(this.match.ball.x, this.match.ball.y, event.team === 'usa' ? COLORS.brightBlue : COLORS.gold, 8);
+      if (event.team === 'usa' && this.time - this.lastPraiseAt > 7) {
+        this.sound.speak('greatSave');
+        this.lastPraiseAt = this.time;
+      }
     } else if (event.type === 'whistle') {
       this.sound.play('whistle');
     } else if (event.type === 'goal') {
       this.sound.play('goal');
+      this.netRipple = { side: event.team === 'usa' ? 'right' : 'left', life: 1.15, maxLife: 1.15 };
       if (event.team === 'usa') {
+        this.sound.speak('goalUsa');
         this.spawnConfetti(110);
         if (!this.reducedMotion) {
           this.camera.shake = 0.8;
@@ -399,6 +419,7 @@ export class Game {
       }
     } else if (event.type === 'match-finished') {
       this.result = event;
+      this.sound.speak(event.result === 'win' ? 'usaWins' : 'greatPlaying');
       window.setTimeout(() => {
         if (this.screen === 'match' && this.match?.state === 'finished') {
           this.screen = 'result';
@@ -406,6 +427,18 @@ export class Game {
         }
       }, this.reducedMotion ? 200 : 850);
     }
+  }
+
+  updateTutorialAudio() {
+    if (!this.match?.isLive || this.introTimer > 0 || this.tutorial.step === 'done') return;
+    if (this.time - this.tutorial.lastCueAt < 0.85 || this.tutorial.voiced.has(this.tutorial.step)) return;
+    const keys = { move: 'tapGrass', pass: 'tapTeammate', shoot: 'tapGoal' };
+    const key = keys[this.tutorial.step];
+    if (!key) return;
+    if (this.tutorial.step === 'pass' && this.match.ball.owner?.team !== 'usa') return;
+    if (this.tutorial.step === 'shoot' && (this.match.ball.owner?.team !== 'usa' || this.match.ball.x < FIELD.centerX - 80)) return;
+    this.sound.speak(key);
+    this.tutorial.voiced.add(this.tutorial.step);
   }
 
   spawnRing(x, y, color, life = 0.6) {
@@ -495,7 +528,13 @@ export class Game {
     glow.addColorStop(1, '#06162c');
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, WORLD.width, WORLD.height);
-    ctx.fillStyle = '#0a2448';
+    if (this.stadiumImage.complete && this.stadiumImage.naturalWidth > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(this.stadiumImage, 0, 0, this.stadiumImage.naturalWidth, this.stadiumImage.naturalHeight, 0, 0, WORLD.width, WORLD.height);
+      ctx.restore();
+    }
+    ctx.fillStyle = 'rgba(4, 25, 59, 0.32)';
     ctx.beginPath();
     ctx.roundRect(24, 20, 1232, 680, 58);
     ctx.fill();
@@ -584,7 +623,14 @@ export class Game {
     const { ctx } = this;
     const top = FIELD.centerY - FIELD.goalWidth / 2;
     const x = direction > 0 ? goalX - FIELD.goalDepth : goalX;
+    const side = direction > 0 ? 'left' : 'right';
+    const rippleStrength = this.netRipple?.side === side ? this.netRipple.life / this.netRipple.maxLife : 0;
     if (!front) {
+      ctx.save();
+      if (rippleStrength > 0) {
+        const outward = side === 'left' ? -1 : 1;
+        ctx.translate(outward * Math.sin(this.time * 24) * rippleStrength * 7, Math.sin(this.time * 18) * rippleStrength * 2.5);
+      }
       ctx.fillStyle = 'rgba(235,247,255,0.18)';
       ctx.fillRect(x, top, FIELD.goalDepth, FIELD.goalWidth);
       ctx.strokeStyle = 'rgba(238,247,255,0.58)';
@@ -601,6 +647,7 @@ export class Game {
         ctx.lineTo(gx, top + FIELD.goalWidth);
         ctx.stroke();
       }
+      ctx.restore();
     } else {
       ctx.strokeStyle = '#f7fbff';
       ctx.lineWidth = 6;

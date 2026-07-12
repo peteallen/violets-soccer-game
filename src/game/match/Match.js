@@ -372,6 +372,11 @@ export class Match {
       }
 
       if (player === this.ball.owner) {
+        const pressure = active ? distance(active, player) : Infinity;
+        if (player.x > 610 && pressure < 78 && this.aiDecisionTimer <= 0 && this.random() < 0.72) {
+          this.opponentPass(player);
+          continue;
+        }
         const aimOffset = Math.sin(this.elapsed * 0.72 + player.number) * 82;
         player.targetX = FIELD.left + 100;
         player.targetY = clamp(FIELD.centerY + aimOffset, FIELD.top + 80, FIELD.bottom - 80);
@@ -530,6 +535,7 @@ export class Match {
       player.userCommanded = false;
       player.trackingId = null;
       this.possessionGrace = player.team === 'usa' ? 1.35 : 1.08;
+      if (player.team === 'opponent') this.aiDecisionTimer = 0.65 + this.random() * 0.35;
       this.ownerPressureTime = 0;
       this.emit('possession-change', { team: player.team, playerId: player.id });
       return;
@@ -591,6 +597,34 @@ export class Match {
     this.ball.kick({ vx: direction.x * speed, vy: direction.y * speed, lift: 58, team: 'opponent' });
     this.opponentShotCooldown = 7.5;
     this.emit('kick', { kind: 'shot', team: 'opponent', playerId: shooter.id });
+  }
+
+  opponentPass(passer) {
+    if (this.ball.owner !== passer) return false;
+    const candidates = this.opponentPlayers
+      .filter((player) => player.role === 'field' && player !== passer)
+      .sort((a, b) => a.x - b.x || distanceSquared(b, this.activePlayer ?? passer) - distanceSquared(a, this.activePlayer ?? passer));
+    const receiver = candidates[0];
+    if (!receiver) return false;
+    const targetX = receiver.x + receiver.vx * 0.22;
+    const targetY = receiver.y + receiver.vy * 0.22;
+    const direction = normalize(targetX - this.ball.x, targetY - this.ball.y);
+    if (direction.length < 1) return false;
+    passer.facing = Math.atan2(direction.y, direction.x);
+    passer.action = 'kick';
+    passer.actionTime = 0;
+    this.ball.kick({
+      vx: direction.x * 430,
+      vy: direction.y * 430,
+      lift: 38,
+      team: 'opponent',
+      receiverId: receiver.id,
+    });
+    receiver.targetX = targetX;
+    receiver.targetY = targetY;
+    this.aiDecisionTimer = 1.1 + this.random() * 0.6;
+    this.emit('kick', { kind: 'pass', team: 'opponent', playerId: passer.id, receiverId: receiver.id });
+    return true;
   }
 
   handleBallBounds() {

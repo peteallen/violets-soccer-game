@@ -1,4 +1,8 @@
+import { AMBIENCE, AUDIO_CLIPS, VOICE_CLIPS } from './audioManifest.js';
+
 const STORAGE_KEY = 'violet_soccer_muted';
+
+const assetUrl = (path) => `${import.meta.env.BASE_URL}${path}`;
 
 export class SoundEngine {
   constructor() {
@@ -6,6 +10,21 @@ export class SoundEngine {
     this.master = null;
     this.muted = localStorage.getItem(STORAGE_KEY) === 'true';
     this.lastKickAt = 0;
+    this.clips = new Map();
+    this.currentVoice = null;
+    this.ambience = {
+      music: this.createLoop(AMBIENCE.music),
+      crowd: this.createLoop(AMBIENCE.crowd),
+    };
+    this.matchAmbienceWanted = false;
+  }
+
+  createLoop(definition) {
+    const audio = new Audio(assetUrl(definition.path));
+    audio.preload = 'auto';
+    audio.loop = true;
+    audio.volume = this.muted ? 0 : definition.volume;
+    return { audio, volume: definition.volume };
   }
 
   async unlock() {
@@ -18,6 +37,7 @@ export class SoundEngine {
       this.master.connect(this.context.destination);
     }
     if (this.context.state === 'suspended') await this.context.resume();
+    if (this.matchAmbienceWanted) this.startMatchAmbience();
   }
 
   setMuted(muted) {
@@ -27,6 +47,8 @@ export class SoundEngine {
       this.master.gain.cancelScheduledValues(this.context.currentTime);
       this.master.gain.setTargetAtTime(muted ? 0 : 0.72, this.context.currentTime, 0.025);
     }
+    for (const loop of Object.values(this.ambience)) loop.audio.volume = muted ? 0 : loop.volume;
+    if (this.currentVoice) this.currentVoice.volume = muted ? 0 : 0.82;
   }
 
   toggleMuted() {
@@ -36,7 +58,12 @@ export class SoundEngine {
   }
 
   play(kind) {
-    if (!this.context || !this.master || this.muted) return;
+    if (this.muted) return;
+    if (AUDIO_CLIPS[kind]) {
+      this.playClip(kind);
+      return;
+    }
+    if (!this.context || !this.master) return;
     const now = this.context.currentTime;
     if (kind === 'kick' && now - this.lastKickAt < 0.06) return;
     if (kind === 'kick') this.lastKickAt = now;
@@ -56,6 +83,62 @@ export class SoundEngine {
       ],
     };
     for (const note of patterns[kind] ?? patterns.ui) this.playTone(note, now);
+  }
+
+  playClip(kind) {
+    const definition = AUDIO_CLIPS[kind];
+    if (!definition) return;
+    let template = this.clips.get(kind);
+    if (!template) {
+      template = new Audio(assetUrl(definition.path));
+      template.preload = 'auto';
+      this.clips.set(kind, template);
+    }
+    const audio = template.cloneNode();
+    audio.volume = this.muted ? 0 : definition.volume;
+    audio.play().catch(() => {});
+  }
+
+  speak(key) {
+    const path = VOICE_CLIPS[key];
+    if (!path || this.muted) return;
+    if (this.currentVoice) {
+      this.currentVoice.pause();
+      this.currentVoice.currentTime = 0;
+    }
+    const voice = new Audio(assetUrl(path));
+    this.currentVoice = voice;
+    voice.volume = 0.82;
+    this.duckAmbience(true);
+    const restore = () => {
+      if (this.currentVoice === voice) this.currentVoice = null;
+      this.duckAmbience(false);
+    };
+    voice.addEventListener('ended', restore, { once: true });
+    voice.addEventListener('error', restore, { once: true });
+    voice.play().catch(restore);
+  }
+
+  startMatchAmbience() {
+    this.matchAmbienceWanted = true;
+    for (const loop of Object.values(this.ambience)) {
+      loop.audio.volume = this.muted ? 0 : loop.volume;
+      loop.audio.play().catch(() => {});
+    }
+  }
+
+  stopMatchAmbience() {
+    this.matchAmbienceWanted = false;
+    for (const loop of Object.values(this.ambience)) {
+      loop.audio.pause();
+      loop.audio.currentTime = 0;
+    }
+  }
+
+  duckAmbience(ducked) {
+    if (this.muted) return;
+    this.ambience.music.audio.volume = this.ambience.music.volume * (ducked ? 0.28 : 1);
+    this.ambience.crowd.audio.volume = this.ambience.crowd.volume * (ducked ? 0.45 : 1);
   }
 
   playTone({ frequency, end = frequency, duration, gain, type, delay = 0 }, now) {

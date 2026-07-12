@@ -7,6 +7,7 @@ const USA_NAMES = ['Violet', 'Mia', 'Sofia'];
 const OPPONENT_NAMES = ['Luna', 'Nora', 'Camila'];
 
 const FIELD_MARGIN = 23;
+export const VIOLET_ID = 'usa-6';
 
 export class Match {
   constructor({ duration = MATCH.durationSeconds, seed = Date.now(), opponentIndex = null } = {}) {
@@ -22,12 +23,16 @@ export class Match {
     this.restartTimer = 0;
     this.lastScoringTeam = null;
     this.lastScorer = null;
-    this.activePlayerId = null;
-    this.pendingActiveId = null;
-    this.pendingActiveTime = 0;
+    this.activePlayerId = VIOLET_ID;
     this.possessionGrace = 0;
     this.ownerPressureTime = 0;
+    this.ownerPressurePairKey = null;
     this.aiDecisionTimer = 0;
+    this.opponentPassCooldown = 0;
+    this.usaTeammateDecisionTimer = 0;
+    this.pressingOpponentId = null;
+    this.opponentBallChaserId = null;
+    this.opponentSupportRunnerIds = [];
     this.opponentShotCooldown = 1.5;
     this.usaShotCooldown = 0;
     this.lastUserActionAt = 0;
@@ -172,6 +177,13 @@ export class Match {
     return true;
   }
 
+  shootAtOpenGoal() {
+    const keeper = this.findPlayer('opp-gk');
+    const openSide = (keeper?.y ?? FIELD.centerY) <= FIELD.centerY ? 1 : -1;
+    const targetY = FIELD.centerY + openSide * FIELD.goalWidth * 0.36;
+    return this.shootAt(targetY, 0.98);
+  }
+
   prepareKickoff(team, initial = false) {
     const positions = {
       'usa-gk': [142, FIELD.centerY],
@@ -180,8 +192,8 @@ export class Match {
       'usa-8': [420, 505],
       'opp-gk': [1138, FIELD.centerY],
       'opp-10': [775, FIELD.centerY],
-      'opp-7': [860, 225],
-      'opp-9': [860, 505],
+      'opp-7': [730, 225],
+      'opp-9': [730, 505],
     };
     for (const player of this.players) {
       const [x, y] = positions[player.id];
@@ -207,69 +219,23 @@ export class Match {
     owner.targetY = owner.y;
     owner.facing = team === 'usa' ? 0 : Math.PI;
     this.ball.attach(owner);
-    this.activePlayerId = team === 'usa' ? owner.id : this.nearestUsaFieldPlayer(this.ball).id;
     this.syncControlledPlayer();
-    this.possessionGrace = team === 'usa' ? 1.4 : 1.35;
+    this.possessionGrace = initial && team === 'usa' ? 5.5 : team === 'usa' ? 1.65 : 1.45;
     this.ownerPressureTime = 0;
+    this.ownerPressurePairKey = null;
     this.aiDecisionTimer = initial ? 1.2 : 0.7;
+    this.usaTeammateDecisionTimer = 0;
   }
 
   syncControlledPlayer() {
-    for (const player of this.usaPlayers) player.controlled = player.id === this.activePlayerId;
-  }
-
-  nearestUsaFieldPlayer(point) {
-    return this.usaPlayers
-      .filter((player) => player.role === 'field')
-      .sort((a, b) => distanceSquared(a, point) - distanceSquared(b, point))[0];
-  }
-
-  updateActivePlayer(dt) {
-    let wanted = null;
-    if (this.ball.owner?.team === 'usa' && this.ball.owner.role === 'field') {
-      wanted = this.ball.owner;
-    } else if (this.ball.intendedReceiverId) {
-      const receiver = this.findPlayer(this.ball.intendedReceiverId);
-      if (receiver?.team === 'usa') wanted = receiver;
-    } else {
-      wanted = this.nearestUsaFieldPlayer(this.ball);
-    }
-    if (!wanted || wanted.id === this.activePlayerId) {
-      this.pendingActiveId = null;
-      this.pendingActiveTime = 0;
-      return;
-    }
-    if (this.ball.owner?.team === 'usa' || this.ball.intendedReceiverId === wanted.id) {
-      this.activePlayerId = wanted.id;
-      this.pendingActiveId = null;
-      this.pendingActiveTime = 0;
-      this.syncControlledPlayer();
-      this.emit('control-change', { playerId: wanted.id });
-      return;
-    }
-    if (this.pendingActiveId !== wanted.id) {
-      this.pendingActiveId = wanted.id;
-      this.pendingActiveTime = 0;
-      return;
-    }
-    this.pendingActiveTime += dt;
-    if (this.pendingActiveTime >= 0.42) {
-      const current = this.activePlayer;
-      const currentDistance = current ? distance(current, this.ball) : Infinity;
-      const wantedDistance = distance(wanted, this.ball);
-      if (wantedDistance + 34 < currentDistance) {
-        this.activePlayerId = wanted.id;
-        this.syncControlledPlayer();
-        this.emit('control-change', { playerId: wanted.id });
-      }
-      this.pendingActiveId = null;
-      this.pendingActiveTime = 0;
-    }
+    this.activePlayerId = VIOLET_ID;
+    for (const player of this.usaPlayers) player.controlled = player.id === VIOLET_ID;
   }
 
   update(dt) {
     dt = clamp(dt, 0, 0.05);
     this.elapsed += dt;
+    this.syncControlledPlayer();
     for (const player of this.players) player.updateAnimation?.(dt);
 
     if (this.state === 'ready' || this.state === 'finished') return;
@@ -293,9 +259,10 @@ export class Match {
 
     this.possessionGrace = Math.max(0, this.possessionGrace - dt);
     this.aiDecisionTimer = Math.max(0, this.aiDecisionTimer - dt);
+    this.opponentPassCooldown = Math.max(0, this.opponentPassCooldown - dt);
+    this.usaTeammateDecisionTimer = Math.max(0, this.usaTeammateDecisionTimer - dt);
     this.opponentShotCooldown = Math.max(0, this.opponentShotCooldown - dt);
     this.usaShotCooldown = Math.max(0, this.usaShotCooldown - dt);
-    this.updateActivePlayer(dt);
     this.updateAiTargets(dt);
     this.movePlayers(dt);
     this.separatePlayers();
@@ -311,7 +278,29 @@ export class Match {
     const active = this.activePlayer;
     const usaPossession = this.ball.owner?.team === 'usa';
     const opponentPossession = this.ball.owner?.team === 'opponent';
-    const ballPoint = this.ball;
+    const opponentFieldPlayers = this.opponentPlayers.filter((player) => player.role === 'field');
+    const usaFieldPlayers = this.usaPlayers.filter((player) => player.role === 'field');
+    const looseBallPoint = this.predictLooseBallPoint();
+    const intendedOpponent = this.ball.intendedReceiverId
+      ? this.findPlayer(this.ball.intendedReceiverId)
+      : null;
+    const opponentBallChaser = !this.ball.owner
+      ? intendedOpponent?.team === 'opponent' && intendedOpponent.role === 'field'
+        ? intendedOpponent
+        : opponentFieldPlayers.reduce((best, candidate) =>
+            distanceSquared(candidate, looseBallPoint) < distanceSquared(best, looseBallPoint) ? candidate : best,
+          )
+      : null;
+    const pressingOpponent = usaPossession && this.ball.owner
+      ? opponentFieldPlayers.reduce((best, candidate) =>
+          distanceSquared(candidate, this.ball.owner) < distanceSquared(best, this.ball.owner) ? candidate : best,
+        )
+      : null;
+    this.pressingOpponentId = pressingOpponent?.id ?? null;
+    this.opponentBallChaserId = opponentBallChaser?.id ?? null;
+    this.opponentSupportRunnerIds = opponentPossession && this.ball.owner
+      ? opponentFieldPlayers.filter((player) => player !== this.ball.owner).map((player) => player.id)
+      : [];
 
     for (const player of this.players) {
       if (player.role === 'keeper') {
@@ -322,7 +311,7 @@ export class Match {
         if (shotThreat) {
           if (!player.readingShot) {
             player.readingShot = true;
-            player.reactionTimer = player.team === 'usa' ? 0.58 : 0.43 + this.helpFactor() * 0.18;
+            player.reactionTimer = player.team === 'usa' ? 0.5 : 0.43 + this.helpFactor() * 0.18;
           }
           player.reactionTimer = Math.max(0, player.reactionTimer - dt);
           if (player.reactionTimer <= 0) {
@@ -339,17 +328,34 @@ export class Match {
         }
         continue;
       }
+      if (player.team === 'usa' && player === this.ball.owner && player.id !== VIOLET_ID) {
+        if (this.usaTeammateDecisionTimer <= 0) {
+          if (this.usaTeammatePassToViolet(player)) return;
+        } else {
+          player.targetX = clamp(player.x + 78, FIELD.left + 140, FIELD.right - 190);
+          player.targetY = clamp(player.y + Math.sin(this.elapsed * 1.4 + player.number) * 38, FIELD.top + 60, FIELD.bottom - 60);
+        }
+        continue;
+      }
       if (player === active) {
         if (player.trackingId) {
           const target = player.trackingId === 'ball' ? this.ball : this.findPlayer(player.trackingId);
-          if (target) {
+          const staleOpponentTrack = target?.team === 'opponent' && this.ball.owner !== target;
+          if (staleOpponentTrack) {
+            player.trackingId = null;
+            player.userCommanded = false;
+          } else if (target) {
             player.targetX = target.x;
             player.targetY = target.y;
           }
-        } else if (!player.userCommanded && !usaPossession) {
+        }
+        if (!player.trackingId && !player.userCommanded && !usaPossession) {
           player.targetX = this.ball.x;
           player.targetY = this.ball.y;
-        } else if (usaPossession && !player.userCommanded && this.elapsed - this.lastUserActionAt > 3.5) {
+        } else if (!player.trackingId && usaPossession && this.ball.owner !== player && !player.userCommanded) {
+          player.targetX = clamp(this.ball.owner.x + 115, FIELD.left + 120, FIELD.right - 175);
+          player.targetY = clamp(this.ball.owner.y, FIELD.top + 55, FIELD.bottom - 55);
+        } else if (!player.trackingId && usaPossession && !player.userCommanded && this.elapsed - this.lastUserActionAt > 3.5) {
           player.targetX = clamp(player.x + 135, FIELD.left + 80, FIELD.right - 190);
           player.targetY = clamp(player.y + Math.sin(this.elapsed * 0.65) * 45, FIELD.top + 55, FIELD.bottom - 55);
         }
@@ -357,7 +363,7 @@ export class Match {
       }
 
       if (player.team === 'usa') {
-        if (usaPossession) {
+        if (usaPossession && this.ball.owner) {
           const owner = this.ball.owner;
           const lane = player.id === 'usa-11' ? -1 : player.id === 'usa-8' ? 1 : 0;
           player.targetX = clamp(owner.x + 175, 260, FIELD.right - 175);
@@ -372,50 +378,113 @@ export class Match {
       }
 
       if (player === this.ball.owner) {
-        const pressure = active ? distance(active, player) : Infinity;
-        if (player.x > 610 && pressure < 78 && this.aiDecisionTimer <= 0 && this.random() < 0.72) {
-          this.opponentPass(player);
+        const nearestDefender = usaFieldPlayers.reduce((best, candidate) =>
+          distanceSquared(candidate, player) < distanceSquared(best, player) ? candidate : best,
+        );
+        const pressure = distance(nearestDefender, player);
+        const inShootingRange = player.x < FIELD.left + 390 &&
+          Math.abs(player.y - FIELD.centerY) < FIELD.goalWidth * 0.88;
+        if (inShootingRange && this.opponentShotCooldown <= 0) {
+          this.opponentShoot(player);
           continue;
         }
-        const aimOffset = Math.sin(this.elapsed * 0.72 + player.number) * 82;
-        player.targetX = FIELD.left + 100;
-        player.targetY = clamp(FIELD.centerY + aimOffset, FIELD.top + 80, FIELD.bottom - 80);
-        if (player.x < 600 && this.opponentShotCooldown <= 0) this.opponentShoot(player);
+        const passTarget = this.findOpponentPassTarget(player, usaFieldPlayers);
+        const laneBlocked = usaFieldPlayers.some((defender) =>
+          defender.x < player.x && player.x - defender.x < 145 && Math.abs(defender.y - player.y) < 88,
+        );
+        if (this.aiDecisionTimer <= 0 && this.opponentPassCooldown <= 0 && passTarget && (pressure < 145 || laneBlocked)) {
+          if (this.opponentPass(player, passTarget)) continue;
+        }
+        const laneOffset = player.id === 'opp-7' ? -82 : player.id === 'opp-9' ? 82 : 0;
+        const defenderClose = pressure < 155 && Math.abs(nearestDefender.y - player.y) < 112;
+        const dodgeDirection = player.y === nearestDefender.y
+          ? (player.number % 2 === 0 ? -1 : 1)
+          : Math.sign(player.y - nearestDefender.y);
+        const dodgeOffset = defenderClose ? dodgeDirection * 74 : 0;
+        const goalApproach = clamp((FIELD.centerX - player.x) / 250, 0, 1);
+        player.targetX = FIELD.left + 205;
+        player.targetY = clamp(
+          FIELD.centerY + laneOffset * (1 - goalApproach * 0.55) + dodgeOffset,
+          FIELD.top + 72,
+          FIELD.bottom - 72,
+        );
         continue;
       }
 
-      if (usaPossession) {
+      if (usaPossession && this.ball.owner) {
         const owner = this.ball.owner;
-        const fieldOpponents = this.opponentPlayers.filter((candidate) => candidate.role === 'field');
-        const closest = fieldOpponents.reduce((best, candidate) =>
-          distanceSquared(candidate, owner) < distanceSquared(best, owner) ? candidate : best,
-        );
-        if (player === closest) {
-          const easing = this.helpFactor();
-          player.targetX = owner.x + 8 + easing * 22;
-          player.targetY = owner.y;
+        if (player === pressingOpponent) {
+          const leadSeconds = clamp(distance(player, owner) / 420, 0.1, 0.34);
+          player.targetX = clamp(
+            owner.x + (owner.vx || 0) * leadSeconds + 18 + this.helpFactor() * 16,
+            FIELD.left + FIELD_MARGIN,
+            FIELD.right - FIELD_MARGIN,
+          );
+          player.targetY = clamp(
+            owner.y + (owner.vy || 0) * leadSeconds,
+            FIELD.top + FIELD_MARGIN,
+            FIELD.bottom - FIELD_MARGIN,
+          );
         } else {
-          const usaTargets = this.usaPlayers.filter((candidate) => candidate.role === 'field' && candidate !== owner);
-          const mark = usaTargets[player.number % usaTargets.length] ?? owner;
+          const coverPlayers = opponentFieldPlayers
+            .filter((candidate) => candidate !== pressingOpponent)
+            .sort((a, b) => a.y - b.y);
+          const usaTargets = usaFieldPlayers
+            .filter((candidate) => candidate !== owner)
+            .sort((a, b) => a.y - b.y);
+          const coverIndex = coverPlayers.indexOf(player);
+          const mark = usaTargets[coverIndex % Math.max(1, usaTargets.length)] ?? owner;
           player.targetX = clamp(mark.x + 75, FIELD.centerX - 160, FIELD.right - 130);
           player.targetY = mark.y;
         }
       } else if (opponentPossession && this.ball.owner) {
         const owner = this.ball.owner;
-        const lane = player.number % 2 === 0 ? -1 : 1;
-        player.targetX = clamp(owner.x - 155, FIELD.left + 160, FIELD.right - 200);
-        player.targetY = clamp(owner.y + lane * 145, FIELD.top + 70, FIELD.bottom - 70);
+        const supportPlayers = opponentFieldPlayers
+          .filter((candidate) => candidate !== owner)
+          .sort((a, b) => a.y - b.y);
+        const supportIndex = supportPlayers.indexOf(player);
+        const lane = supportIndex === 0 ? -1 : 1;
+        player.targetX = clamp(owner.x - 165 - supportIndex * 18, FIELD.left + 180, FIELD.right - 200);
+        player.targetY = clamp(owner.y + lane * 138, FIELD.top + 68, FIELD.bottom - 68);
       } else {
-        const fieldOpponents = this.opponentPlayers.filter((candidate) => candidate.role === 'field');
-        const closest = fieldOpponents.reduce((best, candidate) =>
-          distanceSquared(candidate, ballPoint) < distanceSquared(best, ballPoint) ? candidate : best,
-        );
-        if (player === closest) {
-          player.targetX = ballPoint.x;
-          player.targetY = ballPoint.y;
+        if (player === opponentBallChaser) {
+          player.targetX = looseBallPoint.x;
+          player.targetY = looseBallPoint.y;
+        } else {
+          const recoveryLane = player.id === 'opp-7' ? -1 : player.id === 'opp-9' ? 1 : 0;
+          player.targetX = clamp(this.ball.x + 135, FIELD.centerX - 120, FIELD.right - 145);
+          player.targetY = clamp(this.ball.y + recoveryLane * 125, FIELD.top + 72, FIELD.bottom - 72);
         }
       }
     }
+  }
+
+  predictLooseBallPoint() {
+    const lookAhead = clamp(this.ball.speed / 980, 0.08, 0.52);
+    return {
+      x: clamp(this.ball.x + this.ball.vx * lookAhead, FIELD.left + FIELD_MARGIN, FIELD.right - FIELD_MARGIN),
+      y: clamp(this.ball.y + this.ball.vy * lookAhead, FIELD.top + FIELD_MARGIN, FIELD.bottom - FIELD_MARGIN),
+    };
+  }
+
+  findOpponentPassTarget(passer, defenders = this.usaPlayers.filter((player) => player.role === 'field')) {
+    const candidates = this.opponentPlayers.filter((player) => player.role === 'field' && player !== passer);
+    if (candidates.length === 0) return null;
+    const forwardOptions = candidates.filter((candidate) => candidate.x < passer.x - 36);
+    const lateralOptions = candidates.filter((candidate) =>
+      candidate.x < passer.x + 75 && Math.abs(candidate.y - passer.y) > 85,
+    );
+    const options = forwardOptions.length > 0 ? forwardOptions : lateralOptions;
+    if (options.length === 0) return null;
+    return options.reduce((best, candidate) => {
+      const candidatePressure = defenders.reduce((nearest, defender) =>
+        Math.min(nearest, distance(defender, candidate)), Infinity);
+      const progress = passer.x - candidate.x;
+      const passLength = distance(passer, candidate);
+      const score = progress * 1.5 + candidatePressure * 0.65 - Math.abs(passLength - 205) * 0.22;
+      if (!best || score > best.score) return { player: candidate, score };
+      return best;
+    }, null)?.player ?? null;
   }
 
   helpFactor() {
@@ -431,8 +500,16 @@ export class Match {
       const direction = normalize(dx, dy);
       let speed;
       if (player.role === 'keeper') speed = player.team === 'usa' ? MATCH.keeperSpeed * 0.82 : MATCH.keeperSpeed * 0.76;
-      else if (player.team === 'usa') speed = player.controlled ? MATCH.usaControlledSpeed : MATCH.usaAiSpeed;
-      else speed = MATCH.opponentSpeed * (1 - this.helpFactor() * 0.22);
+      else if (player.team === 'usa') {
+        speed = player.controlled ? MATCH.usaControlledSpeed : MATCH.usaAiSpeed;
+        if (player.hasBall) speed *= player.controlled ? 0.82 : 0.9;
+      } else {
+        speed = MATCH.opponentSpeed * (1 - this.helpFactor() * 0.12);
+        if (player.hasBall) speed *= 1.08;
+        else if (player.id === this.pressingOpponentId) speed *= 1.2;
+        else if (player.id === this.opponentBallChaserId) speed *= 1.18;
+        else if (this.opponentSupportRunnerIds.includes(player.id)) speed *= 1.55;
+      }
       if (direction.length < 4) speed = 0;
       player.speed = speed;
       player.vx = direction.x * speed;
@@ -448,6 +525,7 @@ export class Match {
         player.vx = 0;
         player.vy = 0;
         player.action = player.hasBall ? 'dribble' : 'idle';
+        if (player.controlled && !player.trackingId) player.userCommanded = false;
       }
       player.x = clamp(player.x, FIELD.left + FIELD_MARGIN, FIELD.right - FIELD_MARGIN);
       player.y = clamp(player.y, FIELD.top + FIELD_MARGIN, FIELD.bottom - FIELD_MARGIN);
@@ -490,17 +568,30 @@ export class Match {
       const challenger = opponents.reduce((best, player) =>
         distanceSquared(player, owner) < distanceSquared(best, owner) ? player : best,
       );
+      const pressurePairKey = `${owner.id}:${challenger.id}`;
+      if (this.ownerPressurePairKey !== pressurePairKey) {
+        this.ownerPressurePairKey = pressurePairKey;
+        this.ownerPressureTime = 0;
+      }
       const challengeDistance = distance(challenger, owner);
       if (challengeDistance < 35 && this.possessionGrace <= 0) {
         this.ownerPressureTime += dt;
-        const needed = owner.team === 'usa' ? 0.78 : 0.26;
+        const needed = owner.team === 'usa'
+          ? owner.id === VIOLET_ID ? 1.1 : 0.72
+          : challenger.id === VIOLET_ID ? 0.26 : 0.68;
         if (this.ownerPressureTime >= needed) {
           const previousTeam = owner.team;
           owner.action = 'stumble';
           challenger.action = 'tackle';
           this.ball.attach(challenger);
-          this.possessionGrace = challenger.team === 'usa' ? 1.25 : 1.18;
+          this.possessionGrace = challenger.team === 'usa' ? 1.65 : 1.4;
+          if (challenger.team === 'usa' && challenger.id !== VIOLET_ID) {
+            this.usaTeammateDecisionTimer = 0.62 + this.random() * 0.35;
+          } else if (challenger.team === 'opponent') {
+            this.aiDecisionTimer = 0.38 + this.random() * 0.28;
+          }
           this.ownerPressureTime = 0;
+          this.ownerPressurePairKey = null;
           this.emit('possession-change', { team: challenger.team, from: previousTeam, playerId: challenger.id });
         }
       } else {
@@ -508,6 +599,9 @@ export class Match {
       }
       return;
     }
+
+    this.ownerPressureTime = 0;
+    this.ownerPressurePairKey = null;
 
     const intended = this.ball.intendedReceiverId ? this.findPlayer(this.ball.intendedReceiverId) : null;
     const ordered = [...this.players].sort((a, b) => {
@@ -517,9 +611,10 @@ export class Match {
     });
     for (const player of ordered) {
       if (player.id === this.ball.pickupLockPlayerId && this.ball.pickupLockTime > 0) continue;
+      if (this.ball.intendedReceiverId && this.ball.pickupLockTime > 0 && player.team !== this.ball.lastTouchTeam) continue;
       const pickupRadius = player.role === 'keeper'
-        ? player.team === 'usa' ? 21 : 34 + this.helpFactor() * 3
-        : player === intended ? 44 : 29;
+        ? player.team === 'usa' ? 21 : 36 - this.helpFactor() * 5
+        : player === intended ? 44 : player.id === this.opponentBallChaserId ? 34 : 29;
       if (distance(player, this.ball) > pickupRadius) continue;
       if (this.ball.z > 38 && player.role !== 'keeper') continue;
       if (player.role === 'keeper') {
@@ -534,9 +629,13 @@ export class Match {
       player.actionTime = 0;
       player.userCommanded = false;
       player.trackingId = null;
-      this.possessionGrace = player.team === 'usa' ? 1.35 : 1.08;
-      if (player.team === 'opponent') this.aiDecisionTimer = 0.65 + this.random() * 0.35;
+      this.possessionGrace = player.team === 'usa' ? 1.6 : 1.35;
+      if (player.team === 'opponent') this.aiDecisionTimer = 0.42 + this.random() * 0.3;
+      if (player.team === 'usa' && player.id !== VIOLET_ID) {
+        this.usaTeammateDecisionTimer = 0.62 + this.random() * 0.35;
+      }
       this.ownerPressureTime = 0;
+      this.ownerPressurePairKey = null;
       this.emit('possession-change', { team: player.team, playerId: player.id });
       return;
     }
@@ -545,7 +644,7 @@ export class Match {
   makeSave(keeper) {
     const attackingTeam = this.ball.lastTouchTeam;
     const isUsaKeeper = keeper.team === 'usa';
-    const saveBias = isUsaKeeper ? 0.82 : 0.38 + this.helpFactor() * 0.12;
+    const saveBias = isUsaKeeper ? 0.82 : 0.42 - this.helpFactor() * 0.16;
     const cleanCatch = this.ball.speed < 430 || this.random() < saveBias;
     keeper.action = 'save';
     keeper.actionTime = 0;
@@ -554,7 +653,7 @@ export class Match {
       this.possessionGrace = 1;
       this.emit('save', { team: keeper.team, kind: 'catch', attackingTeam });
       const receiver = keeper.team === 'usa'
-        ? this.nearestUsaFieldPlayer({ x: 360, y: keeper.y })
+        ? this.findPlayer(VIOLET_ID)
         : this.opponentPlayers
           .filter((player) => player.role === 'field')
           .sort((a, b) => distanceSquared(a, { x: 920, y: keeper.y }) - distanceSquared(b, { x: 920, y: keeper.y }))[0];
@@ -573,41 +672,71 @@ export class Match {
     if (!keeper.distributeToId || this.ball.owner !== keeper) return;
     keeper.distributeTimer -= dt;
     if (keeper.distributeTimer > 0) return;
-    const receiver = this.findPlayer(keeper.distributeToId);
-    keeper.distributeToId = null;
+    const receiver = this.findPlayer(keeper.distributeToId) ??
+      this.players.find((player) => player.team === keeper.team && player.role === 'field');
     if (!receiver) return;
-    const direction = normalize(receiver.x - keeper.x, receiver.y - keeper.y);
+    keeper.distributeToId = null;
+    const leadSeconds = 0.24;
+    const targetX = receiver.x + receiver.vx * leadSeconds;
+    const targetY = receiver.y + receiver.vy * leadSeconds;
+    const direction = normalize(targetX - keeper.x, targetY - keeper.y);
     this.ball.kick({ vx: direction.x * 390, vy: direction.y * 390, lift: 55, team: keeper.team, receiverId: receiver.id });
+    if (receiver.id === VIOLET_ID && !receiver.userCommanded) receiver.trackingId = 'ball';
     this.emit('kick', { kind: 'rollout', team: keeper.team, playerId: keeper.id, receiverId: receiver.id });
   }
 
   opponentShoot(shooter) {
     if (this.ball.owner !== shooter) return;
-    const easyMiss = this.random() < 0.27 + this.helpFactor() * 0.18;
+    const easyMiss = this.random() < 0.38 + this.helpFactor() * 0.18;
     const keeper = this.findPlayer('usa-gk');
     const openSide = (keeper?.y ?? FIELD.centerY) <= FIELD.centerY ? 1 : -1;
     const targetY = easyMiss
       ? FIELD.centerY + (this.random() < 0.5 ? -1 : 1) * (FIELD.goalWidth * 0.6 + this.random() * 55)
-      : FIELD.centerY + openSide * (68 + this.random() * 16) + (this.random() - 0.5) * 12;
+      : FIELD.centerY + openSide * (42 + this.random() * 12) + (this.random() - 0.5) * 10;
     const direction = normalize(FIELD.left - 30 - this.ball.x, targetY - this.ball.y);
     shooter.facing = Math.atan2(direction.y, direction.x);
     shooter.action = 'kick';
     shooter.actionTime = 0;
     const speed = MATCH.opponentShotSpeed * (1.08 + this.random() * 0.1);
     this.ball.kick({ vx: direction.x * speed, vy: direction.y * speed, lift: 58, team: 'opponent' });
-    this.opponentShotCooldown = 7.5;
+    this.opponentShotCooldown = 14.5 + this.helpFactor() * 4;
     this.emit('kick', { kind: 'shot', team: 'opponent', playerId: shooter.id });
   }
 
-  opponentPass(passer) {
+  usaTeammatePassToViolet(passer) {
+    const receiver = this.findPlayer(VIOLET_ID);
+    if (!receiver || this.ball.owner !== passer) return false;
+    const leadSeconds = 0.28;
+    const targetX = receiver.x + receiver.vx * leadSeconds;
+    const targetY = receiver.y + receiver.vy * leadSeconds;
+    const direction = normalize(targetX - this.ball.x, targetY - this.ball.y);
+    if (direction.length < 1) return false;
+    passer.facing = Math.atan2(direction.y, direction.x);
+    passer.action = 'kick';
+    passer.actionTime = 0;
+    this.ball.kick({
+      vx: direction.x * MATCH.passSpeed,
+      vy: direction.y * MATCH.passSpeed,
+      lift: 40,
+      team: 'usa',
+      receiverId: receiver.id,
+    });
+    if (!receiver.userCommanded) {
+      receiver.targetX = targetX;
+      receiver.targetY = targetY;
+      receiver.trackingId = 'ball';
+    }
+    this.usaTeammateDecisionTimer = 0;
+    this.emit('kick', { kind: 'pass', team: 'usa', playerId: passer.id, receiverId: receiver.id });
+    return true;
+  }
+
+  opponentPass(passer, selectedReceiver = null) {
     if (this.ball.owner !== passer) return false;
-    const candidates = this.opponentPlayers
-      .filter((player) => player.role === 'field' && player !== passer)
-      .sort((a, b) => a.x - b.x || distanceSquared(b, this.activePlayer ?? passer) - distanceSquared(a, this.activePlayer ?? passer));
-    const receiver = candidates[0];
+    const receiver = selectedReceiver ?? this.findOpponentPassTarget(passer);
     if (!receiver) return false;
-    const targetX = receiver.x + receiver.vx * 0.22;
-    const targetY = receiver.y + receiver.vy * 0.22;
+    const targetX = receiver.x + receiver.vx * 0.28;
+    const targetY = receiver.y + receiver.vy * 0.28;
     const direction = normalize(targetX - this.ball.x, targetY - this.ball.y);
     if (direction.length < 1) return false;
     passer.facing = Math.atan2(direction.y, direction.x);
@@ -623,6 +752,7 @@ export class Match {
     receiver.targetX = targetX;
     receiver.targetY = targetY;
     this.aiDecisionTimer = 1.1 + this.random() * 0.6;
+    this.opponentPassCooldown = 2.2 + this.random() * 0.5;
     this.emit('kick', { kind: 'pass', team: 'opponent', playerId: passer.id, receiverId: receiver.id });
     return true;
   }

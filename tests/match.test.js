@@ -32,6 +32,36 @@ describe('Match', () => {
     expectVioletControl(match);
   });
 
+  it('protects Violet long enough to complete the opening move-and-pass lesson', () => {
+    const match = new Match({ seed: 7 });
+    const violet = match.findPlayer(VIOLET_ID);
+    const challenger = match.findPlayer('opp-10');
+    challenger.x = violet.x + 31;
+    challenger.y = violet.y;
+    for (const opponent of match.opponentPlayers.filter((player) => player.role === 'field' && player !== challenger)) {
+      opponent.x = FIELD.right - 80;
+    }
+    match.start();
+
+    advance(match, 5.8);
+
+    expect(match.ball.owner).toBe(violet);
+    expect(match.events).not.toContainEqual(expect.objectContaining({
+      type: 'possession-change',
+      team: 'opponent',
+      from: 'usa',
+    }));
+
+    advance(match, 0.9);
+    expect(match.events).toContainEqual(expect.objectContaining({
+      type: 'possession-change',
+      team: 'opponent',
+      from: 'usa',
+      playerId: challenger.id,
+    }));
+    expectVioletControl(match);
+  });
+
   it('lets a teammate receive and return Violet’s pass without moving control', () => {
     const match = new Match({ seed: 10 });
     match.start();
@@ -132,6 +162,222 @@ describe('Match', () => {
       playerId: VIOLET_ID,
     }));
     expectVioletControl(match);
+  });
+
+  it('presses Violet clearly but leaves a forgiving window before winning the ball', () => {
+    const match = new Match({ seed: 31 });
+    match.start();
+    const violet = match.findPlayer(VIOLET_ID);
+    const challenger = match.findPlayer('opp-10');
+    violet.x = 610;
+    violet.y = FIELD.centerY;
+    violet.targetX = violet.x;
+    violet.targetY = violet.y;
+    challenger.x = violet.x + 31;
+    challenger.y = violet.y;
+    for (const opponent of match.opponentPlayers.filter((player) => player.role === 'field' && player !== challenger)) {
+      opponent.x = FIELD.right - 80;
+      opponent.y = opponent.id === 'opp-7' ? FIELD.top + 70 : FIELD.bottom - 70;
+    }
+    match.ball.attach(violet);
+    match.possessionGrace = 0;
+
+    match.update(1 / 60);
+    expect(match.pressingOpponentId).toBe(challenger.id);
+    expect(challenger.targetX).toBeGreaterThanOrEqual(violet.x);
+
+    advance(match, 0.62);
+    expect(match.ball.owner).toBe(violet);
+
+    advance(match, 0.58);
+    expect(match.events).toContainEqual(expect.objectContaining({
+      type: 'possession-change',
+      team: 'opponent',
+      from: 'usa',
+      playerId: challenger.id,
+    }));
+    expectVioletControl(match);
+  });
+
+  it('does not carry tackle progress from one challenger to another', () => {
+    const match = new Match({ seed: 36 });
+    match.start();
+    const violet = match.findPlayer(VIOLET_ID);
+    const firstChallenger = match.findPlayer('opp-10');
+    const secondChallenger = match.findPlayer('opp-7');
+    const thirdOpponent = match.findPlayer('opp-9');
+    violet.x = 610;
+    violet.y = FIELD.centerY;
+    violet.targetX = violet.x;
+    violet.targetY = violet.y;
+    firstChallenger.x = violet.x + 31;
+    firstChallenger.y = violet.y;
+    secondChallenger.x = FIELD.right - 80;
+    secondChallenger.y = FIELD.top + 70;
+    thirdOpponent.x = FIELD.right - 80;
+    thirdOpponent.y = FIELD.bottom - 70;
+    match.ball.attach(violet);
+    match.possessionGrace = 0;
+
+    advance(match, 0.7);
+    expect(match.ball.owner).toBe(violet);
+
+    firstChallenger.x = FIELD.right - 80;
+    firstChallenger.y = FIELD.centerY;
+    secondChallenger.x = violet.x + 31;
+    secondChallenger.y = violet.y;
+    advance(match, 0.45);
+
+    expect(match.ball.owner).toBe(violet);
+
+    advance(match, 0.72);
+    expect(match.events).toContainEqual(expect.objectContaining({
+      type: 'possession-change',
+      team: 'opponent',
+      from: 'usa',
+      playerId: secondChallenger.id,
+    }));
+    expectVioletControl(match);
+  });
+
+  it('assigns a loose-ball chaser that reaches and claims the ball', () => {
+    const match = new Match({ seed: 32 });
+    match.start();
+    const chaser = match.findPlayer('opp-10');
+    match.ball.release();
+    match.ball.x = 720;
+    match.ball.y = FIELD.centerY;
+    match.ball.vx = 0;
+    match.ball.vy = 0;
+    match.ball.lastTouchTeam = 'usa';
+    chaser.x = 650;
+    chaser.y = FIELD.centerY;
+    for (const player of match.usaPlayers.filter((candidate) => candidate.role === 'field')) {
+      player.x = 280;
+      player.y = FIELD.top + 70 + player.number * 3;
+    }
+    for (const opponent of match.opponentPlayers.filter((player) => player.role === 'field' && player !== chaser)) {
+      opponent.x = 980;
+    }
+
+    match.update(1 / 60);
+    expect(match.opponentBallChaserId).toBe(chaser.id);
+    expect(chaser.targetX).toBeCloseTo(match.ball.x, 0);
+
+    advance(match, 0.8);
+    expect(match.ball.owner).toBe(chaser);
+    expectVioletControl(match);
+  });
+
+  it('carries possession toward the USA goal instead of standing still', () => {
+    const match = new Match({ seed: 33 });
+    match.start();
+    const carrier = match.findPlayer('opp-10');
+    carrier.x = 770;
+    carrier.y = FIELD.centerY;
+    for (const player of match.usaPlayers.filter((candidate) => candidate.role === 'field')) {
+      player.x = 1040;
+      player.y = FIELD.top + 65 + player.number * 8;
+    }
+    match.ball.attach(carrier);
+    match.possessionGrace = 10;
+    match.aiDecisionTimer = 10;
+    match.opponentShotCooldown = 10;
+    const startingX = carrier.x;
+
+    advance(match, 1);
+
+    expect(match.ball.owner).toBe(carrier);
+    expect(carrier.action).toBe('dribble');
+    expect(carrier.x).toBeLessThan(startingX - 95);
+    expectVioletControl(match);
+  });
+
+  it('uses a forward teammate when the carrier is under pressure', () => {
+    const match = new Match({ seed: 34 });
+    match.start();
+    const carrier = match.findPlayer('opp-10');
+    const forwardReceiver = match.findPlayer('opp-7');
+    const violet = match.findPlayer(VIOLET_ID);
+    carrier.x = 740;
+    carrier.y = FIELD.centerY;
+    forwardReceiver.x = 530;
+    forwardReceiver.y = FIELD.centerY - 110;
+    match.findPlayer('opp-9').x = 870;
+    violet.x = carrier.x + 38;
+    violet.y = carrier.y;
+    match.ball.attach(carrier);
+    match.possessionGrace = 1;
+    match.aiDecisionTimer = 0;
+
+    match.update(1 / 60);
+
+    expect(match.ball.owner).toBeNull();
+    expect(match.ball.intendedReceiverId).toBe(forwardReceiver.id);
+    expect(match.ball.vx).toBeLessThan(0);
+    expect(match.events).toContainEqual(expect.objectContaining({
+      type: 'kick',
+      kind: 'pass',
+      team: 'opponent',
+      playerId: carrier.id,
+      receiverId: forwardReceiver.id,
+    }));
+    expectVioletControl(match);
+  });
+
+  it('shoots once an opponent carrier reaches a useful range', () => {
+    const match = new Match({ seed: 35 });
+    match.start();
+    const shooter = match.findPlayer('opp-10');
+    shooter.x = FIELD.left + 380;
+    shooter.y = FIELD.centerY;
+    match.ball.attach(shooter);
+    match.opponentShotCooldown = 0;
+
+    match.update(1 / 60);
+
+    expect(match.ball.owner).toBeNull();
+    expect(match.ball.intendedReceiverId).toBeNull();
+    expect(match.ball.vx).toBeLessThan(0);
+    expect(match.events).toContainEqual(expect.objectContaining({
+      type: 'kick',
+      kind: 'shot',
+      team: 'opponent',
+      playerId: shooter.id,
+    }));
+    expectVioletControl(match);
+  });
+
+  it('naturally presses, passes, and shoots during seeded play without overwhelming Violet', () => {
+    const match = new Match({ duration: 60, seed: 4 });
+    const opponentActions = { steals: 0, passes: 0, shots: 0 };
+    match.start();
+
+    for (let frame = 0; frame < 60 * 60 && match.state !== 'finished'; frame += 1) {
+      if (frame % 30 === 0 && match.isLive) {
+        const violet = match.activePlayer;
+        if (match.ball.owner === violet) {
+          if (violet.x > 830) match.shootAtOpenGoal();
+          else match.setMoveTarget(FIELD.right - 150, FIELD.centerY + Math.sin(frame / 95) * 100);
+        } else {
+          match.setMoveTarget(match.ball.x, match.ball.y, { tracking: 'ball' });
+        }
+      }
+      match.update(1 / 60);
+      expectVioletControl(match);
+      for (const event of match.drainEvents()) {
+        if (event.type === 'possession-change' && event.team === 'opponent' && event.from === 'usa') {
+          opponentActions.steals += 1;
+        }
+        if (event.type === 'kick' && event.team === 'opponent' && event.kind === 'pass') opponentActions.passes += 1;
+        if (event.type === 'kick' && event.team === 'opponent' && event.kind === 'shot') opponentActions.shots += 1;
+      }
+    }
+
+    expect(opponentActions.steals).toBeGreaterThanOrEqual(1);
+    expect(opponentActions.steals).toBeLessThanOrEqual(10);
+    expect(opponentActions.passes).toBeGreaterThanOrEqual(6);
+    expect(opponentActions.shots).toBeGreaterThanOrEqual(2);
   });
 
   it('does not allow an opponent to steal during USA receipt protection', () => {

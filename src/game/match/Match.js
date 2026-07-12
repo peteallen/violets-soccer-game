@@ -7,6 +7,7 @@ const USA_NAMES = ['Violet', 'Mia', 'Sofia'];
 const OPPONENT_NAMES = ['Luna', 'Nora', 'Camila'];
 
 const FIELD_MARGIN = 23;
+const USA_PASS_PROTECTION_SECONDS = 0.9;
 export const VIOLET_ID = 'usa-6';
 
 export class Match {
@@ -30,6 +31,7 @@ export class Match {
     this.aiDecisionTimer = 0;
     this.opponentPassCooldown = 0;
     this.usaTeammateDecisionTimer = 0;
+    this.usaPassProtectionTime = 0;
     this.pressingOpponentId = null;
     this.opponentBallChaserId = null;
     this.opponentSupportRunnerIds = [];
@@ -149,6 +151,7 @@ export class Match {
       team: 'usa',
       receiverId: receiver.id,
     });
+    this.usaPassProtectionTime = USA_PASS_PROTECTION_SECONDS;
     receiver.targetX = targetX;
     receiver.targetY = targetY;
     receiver.trackingId = 'ball';
@@ -171,6 +174,7 @@ export class Match {
     shooter.action = 'kick';
     shooter.actionTime = 0;
     this.ball.kick({ vx: direction.x * speed, vy: direction.y * speed, lift: 74, team: 'usa' });
+    this.usaPassProtectionTime = 0;
     this.usaShotCooldown = 0.85;
     this.emit('kick', { kind: 'shot', team: 'usa', playerId: shooter.id });
     this.lastUserActionAt = this.elapsed;
@@ -225,6 +229,7 @@ export class Match {
     this.ownerPressurePairKey = null;
     this.aiDecisionTimer = initial ? 1.2 : 0.7;
     this.usaTeammateDecisionTimer = 0;
+    this.usaPassProtectionTime = 0;
   }
 
   syncControlledPlayer() {
@@ -261,6 +266,7 @@ export class Match {
     this.aiDecisionTimer = Math.max(0, this.aiDecisionTimer - dt);
     this.opponentPassCooldown = Math.max(0, this.opponentPassCooldown - dt);
     this.usaTeammateDecisionTimer = Math.max(0, this.usaTeammateDecisionTimer - dt);
+    this.usaPassProtectionTime = Math.max(0, this.usaPassProtectionTime - dt);
     this.opponentShotCooldown = Math.max(0, this.opponentShotCooldown - dt);
     this.usaShotCooldown = Math.max(0, this.usaShotCooldown - dt);
     this.updateAiTargets(dt);
@@ -609,9 +615,12 @@ export class Match {
       if (b === intended) return 1;
       return distanceSquared(a, this.ball) - distanceSquared(b, this.ball);
     });
+    const protectedUsaReception = this.ball.lastTouchTeam === 'usa' &&
+      this.ball.intendedReceiverId && this.usaPassProtectionTime > 0;
     for (const player of ordered) {
       if (player.id === this.ball.pickupLockPlayerId && this.ball.pickupLockTime > 0) continue;
       if (this.ball.intendedReceiverId && this.ball.pickupLockTime > 0 && player.team !== this.ball.lastTouchTeam) continue;
+      if (protectedUsaReception && player.team === 'opponent' && player.role === 'field') continue;
       const pickupRadius = player.role === 'keeper'
         ? player.team === 'usa' ? 21 : 36 - this.helpFactor() * 5
         : player === intended ? 44 : player.id === this.opponentBallChaserId ? 34 : 29;
@@ -625,6 +634,7 @@ export class Match {
       }
       if (this.ball.speed > 520 && player !== intended) continue;
       this.ball.attach(player);
+      this.usaPassProtectionTime = 0;
       player.action = 'receive';
       player.actionTime = 0;
       player.userCommanded = false;
@@ -650,6 +660,7 @@ export class Match {
     keeper.actionTime = 0;
     if (cleanCatch) {
       this.ball.attach(keeper);
+      this.usaPassProtectionTime = 0;
       this.possessionGrace = 1;
       this.emit('save', { team: keeper.team, kind: 'catch', attackingTeam });
       const receiver = keeper.team === 'usa'
@@ -664,6 +675,7 @@ export class Match {
       this.ball.vy += (this.random() - 0.5) * 170;
       this.ball.vz = Math.max(this.ball.vz, 95);
       this.ball.intendedReceiverId = null;
+      this.usaPassProtectionTime = 0;
       this.emit('save', { team: keeper.team, kind: 'deflect', attackingTeam });
     }
   }
@@ -681,6 +693,7 @@ export class Match {
     const targetY = receiver.y + receiver.vy * leadSeconds;
     const direction = normalize(targetX - keeper.x, targetY - keeper.y);
     this.ball.kick({ vx: direction.x * 390, vy: direction.y * 390, lift: 55, team: keeper.team, receiverId: receiver.id });
+    this.usaPassProtectionTime = keeper.team === 'usa' ? USA_PASS_PROTECTION_SECONDS : 0;
     if (receiver.id === VIOLET_ID && !receiver.userCommanded) receiver.trackingId = 'ball';
     this.emit('kick', { kind: 'rollout', team: keeper.team, playerId: keeper.id, receiverId: receiver.id });
   }
@@ -699,6 +712,7 @@ export class Match {
     shooter.actionTime = 0;
     const speed = MATCH.opponentShotSpeed * (1.08 + this.random() * 0.1);
     this.ball.kick({ vx: direction.x * speed, vy: direction.y * speed, lift: 58, team: 'opponent' });
+    this.usaPassProtectionTime = 0;
     this.opponentShotCooldown = 14.5 + this.helpFactor() * 4;
     this.emit('kick', { kind: 'shot', team: 'opponent', playerId: shooter.id });
   }
@@ -721,6 +735,7 @@ export class Match {
       team: 'usa',
       receiverId: receiver.id,
     });
+    this.usaPassProtectionTime = USA_PASS_PROTECTION_SECONDS;
     if (!receiver.userCommanded) {
       receiver.targetX = targetX;
       receiver.targetY = targetY;
@@ -749,6 +764,7 @@ export class Match {
       team: 'opponent',
       receiverId: receiver.id,
     });
+    this.usaPassProtectionTime = 0;
     receiver.targetX = targetX;
     receiver.targetY = targetY;
     this.aiDecisionTimer = 1.1 + this.random() * 0.6;

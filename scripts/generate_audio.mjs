@@ -20,7 +20,7 @@ const voice = {
     ["lets_go_usa.mp3", "Let’s go, USA!"],
     ["tap_grass.mp3", "Tap the grass to run!"],
     ["tap_teammate.mp3", "Tap a teammate to pass!"],
-    ["tap_kick.mp3", "Tap the kick button to shoot!"],
+    ["tap_goal.mp3", "Tap the goal to shoot!"],
     ["great_pass.mp3", "Great pass!"],
     ["goal_usa.mp3", "Goal! Go, USA!"],
     ["great_save.mp3", "What a save!"],

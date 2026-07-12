@@ -5,7 +5,21 @@ import { Match } from './match/Match.js';
 import { drawGoalNet } from './world/GoalRenderer.js';
 
 const STORAGE_OPPONENT = 'violet_soccer_opponent';
-const KICK_BUTTON = Object.freeze({ x: 1105, y: 563, radius: 58, hitRadius: 72 });
+export const ATTACKING_GOAL_TARGET = Object.freeze({
+  left: FIELD.right - 56,
+  right: WORLD.width,
+  top: FIELD.centerY - FIELD.goalWidth / 2 - 42,
+  bottom: FIELD.centerY + FIELD.goalWidth / 2 + 42,
+  cueX: FIELD.right + FIELD.goalDepth * 0.25,
+  cueY: FIELD.centerY,
+});
+
+export function isAttackingGoalTap(point) {
+  return point.x >= ATTACKING_GOAL_TARGET.left &&
+    point.x <= ATTACKING_GOAL_TARGET.right &&
+    point.y >= ATTACKING_GOAL_TARGET.top &&
+    point.y <= ATTACKING_GOAL_TARGET.bottom;
+}
 
 export class Game {
   constructor(canvas) {
@@ -147,7 +161,7 @@ export class Game {
       if (this.match.passTo(pointer.targetId)) {
         this.completeTutorialStep('pass');
       }
-    } else if (pointer.mode === 'kick' && this.screen === 'match') {
+    } else if (pointer.mode === 'goal-shot' && this.screen === 'match') {
       if (this.match.shootAtOpenGoal()) {
         this.completeTutorialStep('shoot');
       }
@@ -214,9 +228,9 @@ export class Game {
     const worldHitRadius = Math.max(42, 48 / Math.max(0.5, this.viewport.scale));
 
     if (ballOwner?.team === 'usa' && ballOwner === active) {
-      if (this.hitKickButton(point)) {
-        this.pointer.mode = 'kick';
-        this.spawnRing(KICK_BUTTON.x, KICK_BUTTON.y, COLORS.gold, 0.42);
+      if (this.hitAttackingGoal(point)) {
+        this.pointer.mode = 'goal-shot';
+        this.spawnRing(ATTACKING_GOAL_TARGET.cueX, ATTACKING_GOAL_TARGET.cueY, COLORS.gold, 0.42);
         return;
       }
       const teammate = this.findTouchedTeammate(point, worldHitRadius);
@@ -311,8 +325,8 @@ export class Game {
     return -1;
   }
 
-  hitKickButton(point) {
-    return Math.hypot(point.x - KICK_BUTTON.x, point.y - KICK_BUTTON.y) <= KICK_BUTTON.hitRadius;
+  hitAttackingGoal(point) {
+    return isAttackingGoalTap(point);
   }
 
   hitRematch(point) {
@@ -412,7 +426,7 @@ export class Game {
   updateTutorialAudio() {
     if (!this.match?.isLive || this.introTimer > 0 || this.tutorial.step === 'done') return;
     if (this.time - this.tutorial.lastCueAt < 0.85 || this.tutorial.voiced.has(this.tutorial.step)) return;
-    const keys = { move: 'tapGrass', pass: 'tapTeammate', shoot: 'tapKick' };
+    const keys = { move: 'tapGrass', pass: 'tapTeammate', shoot: 'tapGoal' };
     const key = keys[this.tutorial.step];
     if (!key) return;
     if (this.tutorial.step === 'pass' && this.match.ball.owner !== this.match.activePlayer) return;
@@ -516,7 +530,6 @@ export class Game {
     if (this.screen === 'splash') this.drawSplashOverlay();
     else if (this.screen === 'match') this.drawMatchOverlay();
     else this.drawResultOverlay();
-    if (this.screen === 'match') this.drawKickButton();
     this.drawParticles(true);
     this.drawMuteButton();
   }
@@ -806,87 +819,6 @@ export class Game {
     else if (this.match.isLive) this.drawTutorialCue();
   }
 
-  drawKickButton() {
-    const violetHasBall = this.match?.isLive && this.match.ball.owner?.id === 'usa-6';
-    if (!violetHasBall) return;
-    const { ctx } = this;
-    const pressed = this.pointer?.mode === 'kick';
-    const pulse = 1 + Math.sin(this.time * 5.2) * 0.035;
-    ctx.save();
-    ctx.translate(KICK_BUTTON.x, KICK_BUTTON.y);
-    ctx.scale((pressed ? 0.93 : 1) * pulse, (pressed ? 0.93 : 1) * pulse);
-    ctx.shadowColor = 'rgba(4, 21, 48, 0.5)';
-    ctx.shadowBlur = pressed ? 7 : 15;
-    ctx.shadowOffsetY = pressed ? 3 : 8;
-    const fill = ctx.createLinearGradient(0, -KICK_BUTTON.radius, 0, KICK_BUTTON.radius);
-    fill.addColorStop(0, pressed ? '#ffca32' : '#fff079');
-    fill.addColorStop(1, pressed ? '#f29b20' : '#ffb82f');
-    ctx.fillStyle = fill;
-    ctx.strokeStyle = COLORS.white;
-    ctx.lineWidth = 7;
-    ctx.beginPath();
-    ctx.arc(0, 0, KICK_BUTTON.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-
-    ctx.save();
-    ctx.translate(-5, -8);
-    ctx.rotate(-0.08);
-    ctx.fillStyle = COLORS.navy;
-    ctx.strokeStyle = '#061735';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(-31, -18);
-    ctx.lineTo(-5, -18);
-    ctx.quadraticCurveTo(2, -18, 8, -10);
-    ctx.lineTo(17, 1);
-    ctx.lineTo(32, 8);
-    ctx.quadraticCurveTo(36, 12, 30, 18);
-    ctx.lineTo(-18, 18);
-    ctx.quadraticCurveTo(-29, 17, -32, 8);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.strokeStyle = COLORS.white;
-    ctx.lineWidth = 3;
-    for (let lace = 0; lace < 3; lace += 1) {
-      ctx.beginPath();
-      ctx.moveTo(-9 + lace * 7, -12);
-      ctx.lineTo(-5 + lace * 7, -4);
-      ctx.stroke();
-    }
-    ctx.fillStyle = COLORS.red;
-    ctx.fillRect(-25, 17, 54, 5);
-    for (const studX of [-18, 0, 20]) {
-      ctx.beginPath();
-      ctx.roundRect(studX - 3, 21, 7, 6, 2);
-      ctx.fill();
-    }
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(35, -22);
-    ctx.fillStyle = COLORS.white;
-    ctx.strokeStyle = COLORS.navy;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, 13, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = COLORS.navy;
-    this.drawStarPath(ctx, 0, 0, 5.5, 2.8);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.fillStyle = COLORS.navy;
-    ctx.font = '1000 16px "Avenir Next", system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('KICK', 0, 46);
-    ctx.restore();
-  }
-
   drawScoreboard() {
     const { ctx, match } = this;
     ctx.save();
@@ -946,7 +878,9 @@ export class Game {
       if (!teammate) return;
       label = 'TAP A TEAMMATE TO PASS'; x = teammate.x; y = teammate.y;
     } else if (this.tutorial.step === 'shoot' && match.ball.owner === match.activePlayer) {
-      label = 'TAP KICK TO SHOOT'; x = KICK_BUTTON.x; y = KICK_BUTTON.y;
+      label = 'TAP THE GOAL TO SHOOT';
+      x = ATTACKING_GOAL_TARGET.cueX;
+      y = ATTACKING_GOAL_TARGET.cueY;
     } else return;
 
     ctx.save();

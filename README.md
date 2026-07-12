@@ -6,7 +6,7 @@ Play the current version at [peteallen.github.io/violets-soccer-game](https://pe
 
 ## How to play
 
-Choose one of the three colorful opponent teams and tap the large play button. Violet is always USA number 6, marked by the glowing star. Tap or drag on the grass to move her. When Violet has the ball, tap a teammate to pass or tap the large KICK button to shoot automatically toward the open side of the goal. When the other team has the ball, tap its ball carrier to chase and tackle automatically.
+Choose one of the three colorful opponent teams and tap the large play button. Violet is always USA number 6, marked by the glowing star. Tap or drag on the grass to move her. When Violet has the ball, tap a teammate to pass or tap the opposing goal to shoot automatically toward its open side. When the other team has the ball, tap its ball carrier to chase and tackle automatically.
 
 Each match has five minutes of active play. There are no fouls, offside calls, throw-ins, unlocks, or menus during the match. The ball rebounds from the sidelines, goalkeepers act automatically, and play restarts quickly after a goal. The score is honest, but every result ends with a friendly celebration and an immediate replay option.
 

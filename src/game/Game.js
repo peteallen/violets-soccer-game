@@ -2,8 +2,10 @@ import { COLORS, FIELD, OPPONENTS, WORLD } from './config.js';
 import { clamp, distance, easeOutBack } from './core/math.js';
 import { SoundEngine } from './core/SoundEngine.js';
 import { Match } from './match/Match.js';
+import { drawGoalNet } from './world/GoalRenderer.js';
 
 const STORAGE_OPPONENT = 'violet_soccer_opponent';
+const KICK_BUTTON = Object.freeze({ x: 1105, y: 563, radius: 58, hitRadius: 72 });
 
 export class Game {
   constructor(canvas) {
@@ -20,7 +22,6 @@ export class Game {
     this.selectedOpponent = Number.isFinite(storedOpponent) ? clamp(storedOpponent, 0, OPPONENTS.length - 1) : 0;
     this.pointer = null;
     this.targetMarker = null;
-    this.aimPoint = null;
     this.highlightPlayerId = null;
     this.particles = [];
     this.camera = { shake: 0, zoom: 1, focusX: WORLD.width / 2, focusY: WORLD.height / 2 };
@@ -132,8 +133,6 @@ export class Game {
     if (this.pointer.mode === 'move' && this.match?.isLive) {
       this.match.setMoveTarget(point.x, point.y, { tracking: null });
       this.targetMarker = { x: point.x, y: point.y, life: 0.5 };
-    } else if (this.pointer.mode === 'aim') {
-      this.aimPoint = point;
     }
   }
 
@@ -148,22 +147,9 @@ export class Game {
       if (this.match.passTo(pointer.targetId)) {
         this.completeTutorialStep('pass');
       }
-    } else if (pointer.mode === 'goal-shot' && this.screen === 'match') {
-      if (this.match.shootAt(point.y, 0.92)) {
+    } else if (pointer.mode === 'kick' && this.screen === 'match') {
+      if (this.match.shootAtOpenGoal()) {
         this.completeTutorialStep('shoot');
-      }
-    } else if (pointer.mode === 'aim' && this.screen === 'match') {
-      const dx = point.x - pointer.start.x;
-      const dy = point.y - pointer.start.y;
-      const dragCss = Math.hypot(dx, dy) * this.viewport.scale;
-      if (dragCss >= 28 && dx > 4) {
-        const ball = this.match.ball;
-        const travelX = Math.max(1, FIELD.right - ball.x);
-        const targetY = ball.y + (dy / dx) * travelX;
-        const strength = clamp(dragCss / 130, 0.78, 1.08);
-        if (this.match.shootAt(targetY, strength)) {
-          this.completeTutorialStep('shoot');
-        }
       }
     } else if (pointer.mode === 'splash-play' && this.screen === 'splash') {
       if (this.hitPlayButton(point)) this.beginMatch();
@@ -185,7 +171,6 @@ export class Game {
 
   clearPointer() {
     this.pointer = null;
-    this.aimPoint = null;
     this.highlightPlayerId = null;
   }
 
@@ -229,22 +214,17 @@ export class Game {
     const worldHitRadius = Math.max(42, 48 / Math.max(0.5, this.viewport.scale));
 
     if (ballOwner?.team === 'usa' && ballOwner === active) {
+      if (this.hitKickButton(point)) {
+        this.pointer.mode = 'kick';
+        this.spawnRing(KICK_BUTTON.x, KICK_BUTTON.y, COLORS.gold, 0.42);
+        return;
+      }
       const teammate = this.findTouchedTeammate(point, worldHitRadius);
       if (teammate) {
         this.pointer.mode = 'pass';
         this.pointer.targetId = teammate.id;
         this.highlightPlayerId = teammate.id;
         this.spawnRing(teammate.x, teammate.y, COLORS.gold, 0.45);
-        return;
-      }
-      if (this.hitOpponentGoal(point)) {
-        this.pointer.mode = 'goal-shot';
-        this.aimPoint = point;
-        return;
-      }
-      if (distance(point, ball) <= worldHitRadius) {
-        this.pointer.mode = 'aim';
-        this.aimPoint = point;
         return;
       }
     }
@@ -331,8 +311,8 @@ export class Game {
     return -1;
   }
 
-  hitOpponentGoal(point) {
-    return point.x >= FIELD.right - 35 && point.y >= FIELD.centerY - FIELD.goalWidth / 2 - 30 && point.y <= FIELD.centerY + FIELD.goalWidth / 2 + 30;
+  hitKickButton(point) {
+    return Math.hypot(point.x - KICK_BUTTON.x, point.y - KICK_BUTTON.y) <= KICK_BUTTON.hitRadius;
   }
 
   hitRematch(point) {
@@ -386,7 +366,7 @@ export class Game {
       const ball = this.match.ball;
       this.spawnTurf(ball.x, ball.y, event.team === 'usa' ? COLORS.brightBlue : COLORS.gold);
       if (event.kind === 'shot' && !this.reducedMotion) this.camera.shake = 0.18;
-      if (event.kind === 'pass' && event.team === 'usa' && this.time - this.lastPraiseAt > 8) {
+      if (event.kind === 'pass' && event.playerId === this.match.activePlayerId && this.time - this.lastPraiseAt > 8) {
         this.sound.speak('greatPass');
         this.lastPraiseAt = this.time;
       }
@@ -432,11 +412,11 @@ export class Game {
   updateTutorialAudio() {
     if (!this.match?.isLive || this.introTimer > 0 || this.tutorial.step === 'done') return;
     if (this.time - this.tutorial.lastCueAt < 0.85 || this.tutorial.voiced.has(this.tutorial.step)) return;
-    const keys = { move: 'tapGrass', pass: 'tapTeammate', shoot: 'tapGoal' };
+    const keys = { move: 'tapGrass', pass: 'tapTeammate', shoot: 'tapKick' };
     const key = keys[this.tutorial.step];
     if (!key) return;
-    if (this.tutorial.step === 'pass' && this.match.ball.owner?.team !== 'usa') return;
-    if (this.tutorial.step === 'shoot' && (this.match.ball.owner?.team !== 'usa' || this.match.ball.x < FIELD.centerX - 80)) return;
+    if (this.tutorial.step === 'pass' && this.match.ball.owner !== this.match.activePlayer) return;
+    if (this.tutorial.step === 'shoot' && this.match.ball.owner !== this.match.activePlayer) return;
     this.sound.speak(key);
     this.tutorial.voiced.add(this.tutorial.step);
   }
@@ -536,6 +516,7 @@ export class Game {
     if (this.screen === 'splash') this.drawSplashOverlay();
     else if (this.screen === 'match') this.drawMatchOverlay();
     else this.drawResultOverlay();
+    if (this.screen === 'match') this.drawKickButton();
     this.drawParticles(true);
     this.drawMuteButton();
   }
@@ -640,55 +621,23 @@ export class Game {
   }
 
   drawGoal(goalX, direction, front) {
-    const { ctx } = this;
-    const top = FIELD.centerY - FIELD.goalWidth / 2;
-    const x = direction > 0 ? goalX - FIELD.goalDepth : goalX;
     const side = direction > 0 ? 'left' : 'right';
     const rippleStrength = this.netRipple?.side === side ? this.netRipple.life / this.netRipple.maxLife : 0;
-    if (!front) {
-      ctx.save();
-      if (rippleStrength > 0) {
-        const outward = side === 'left' ? -1 : 1;
-        ctx.translate(outward * Math.sin(this.time * 24) * rippleStrength * 7, Math.sin(this.time * 18) * rippleStrength * 2.5);
-      }
-      ctx.fillStyle = 'rgba(235,247,255,0.18)';
-      ctx.fillRect(x, top, FIELD.goalDepth, FIELD.goalWidth);
-      ctx.strokeStyle = 'rgba(238,247,255,0.58)';
-      ctx.lineWidth = 1.4;
-      for (let y = top + 15; y < top + FIELD.goalWidth; y += 15) {
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + FIELD.goalDepth, y);
-        ctx.stroke();
-      }
-      for (let gx = x + 13; gx < x + FIELD.goalDepth; gx += 13) {
-        ctx.beginPath();
-        ctx.moveTo(gx, top);
-        ctx.lineTo(gx, top + FIELD.goalWidth);
-        ctx.stroke();
-      }
-      ctx.restore();
-    } else {
-      ctx.strokeStyle = '#f7fbff';
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(goalX, top);
-      ctx.lineTo(goalX, top + FIELD.goalWidth);
-      ctx.moveTo(x, top);
-      ctx.lineTo(x + FIELD.goalDepth, top);
-      ctx.moveTo(x, top + FIELD.goalWidth);
-      ctx.lineTo(x + FIELD.goalDepth, top + FIELD.goalWidth);
-      ctx.stroke();
-    }
+    drawGoalNet(this.ctx, {
+      goalX,
+      centerY: FIELD.centerY,
+      goalWidth: FIELD.goalWidth,
+      goalDepth: FIELD.goalDepth,
+      side,
+      front,
+      time: this.time,
+      rippleStrength,
+    });
   }
 
   drawMatchScene() {
     if (!this.match) return;
     const { ctx } = this;
-    if (this.hitOpponentGoal(this.pointer?.current ?? { x: -1, y: -1 }) && this.match.ball.owner?.team === 'usa') {
-      ctx.fillStyle = `rgba(255,215,90,${0.12 + Math.sin(this.time * 5) * 0.04})`;
-      ctx.fillRect(FIELD.right - 24, FIELD.centerY - FIELD.goalWidth / 2 - 20, FIELD.goalDepth + 48, FIELD.goalWidth + 40);
-    }
     const sorted = [...this.match.players].sort((a, b) => a.y - b.y);
     for (const player of sorted) {
       if (player.id === this.highlightPlayerId) {
@@ -706,7 +655,6 @@ export class Game {
     this.drawGoal(FIELD.left, 1, true);
     this.drawGoal(FIELD.right, -1, true);
     this.drawTargetMarker();
-    this.drawAimArrow();
   }
 
   drawTargetMarker() {
@@ -723,41 +671,6 @@ export class Game {
     ctx.stroke();
     this.drawStarPath(ctx, 0, 0, 12, 6);
     ctx.fillStyle = COLORS.white;
-    ctx.fill();
-    ctx.restore();
-  }
-
-  drawAimArrow() {
-    if (!this.pointer || !this.aimPoint || !['aim', 'goal-shot'].includes(this.pointer.mode)) return;
-    const { ctx } = this;
-    const start = this.match.ball;
-    const end = this.pointer.mode === 'goal-shot' ? { x: FIELD.right + 8, y: this.aimPoint.y } : this.aimPoint;
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const length = Math.hypot(dx, dy);
-    if (length < 8) return;
-    const nx = dx / length;
-    const ny = dy / length;
-    const shownLength = clamp(length, 45, 190);
-    const targetX = start.x + nx * shownLength;
-    const targetY = start.y + ny * shownLength;
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-    ctx.lineWidth = 12;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    ctx.quadraticCurveTo((start.x + targetX) / 2, (start.y + targetY) / 2 - 10, targetX, targetY);
-    ctx.stroke();
-    ctx.strokeStyle = COLORS.brightBlue;
-    ctx.lineWidth = 5;
-    ctx.stroke();
-    ctx.fillStyle = COLORS.white;
-    ctx.beginPath();
-    ctx.moveTo(targetX + nx * 16, targetY + ny * 16);
-    ctx.lineTo(targetX - nx * 11 - ny * 13, targetY - ny * 11 + nx * 13);
-    ctx.lineTo(targetX - nx * 11 + ny * 13, targetY - ny * 11 - nx * 13);
-    ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
@@ -843,7 +756,7 @@ export class Game {
     ctx.fillText('USA SOCCER', WORLD.width / 2, 218);
     ctx.shadowBlur = 0;
 
-    this.drawUsaShield(317, 315, 0.78);
+    this.drawUsaFlag(317, 315, 104, 64);
     ctx.fillStyle = COLORS.white;
     ctx.font = '1000 44px "Avenir Next", system-ui, sans-serif';
     ctx.fillText('VS', 640, 330);
@@ -893,6 +806,87 @@ export class Game {
     else if (this.match.isLive) this.drawTutorialCue();
   }
 
+  drawKickButton() {
+    const violetHasBall = this.match?.isLive && this.match.ball.owner?.id === 'usa-6';
+    if (!violetHasBall) return;
+    const { ctx } = this;
+    const pressed = this.pointer?.mode === 'kick';
+    const pulse = 1 + Math.sin(this.time * 5.2) * 0.035;
+    ctx.save();
+    ctx.translate(KICK_BUTTON.x, KICK_BUTTON.y);
+    ctx.scale((pressed ? 0.93 : 1) * pulse, (pressed ? 0.93 : 1) * pulse);
+    ctx.shadowColor = 'rgba(4, 21, 48, 0.5)';
+    ctx.shadowBlur = pressed ? 7 : 15;
+    ctx.shadowOffsetY = pressed ? 3 : 8;
+    const fill = ctx.createLinearGradient(0, -KICK_BUTTON.radius, 0, KICK_BUTTON.radius);
+    fill.addColorStop(0, pressed ? '#ffca32' : '#fff079');
+    fill.addColorStop(1, pressed ? '#f29b20' : '#ffb82f');
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.arc(0, 0, KICK_BUTTON.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    ctx.save();
+    ctx.translate(-5, -8);
+    ctx.rotate(-0.08);
+    ctx.fillStyle = COLORS.navy;
+    ctx.strokeStyle = '#061735';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-31, -18);
+    ctx.lineTo(-5, -18);
+    ctx.quadraticCurveTo(2, -18, 8, -10);
+    ctx.lineTo(17, 1);
+    ctx.lineTo(32, 8);
+    ctx.quadraticCurveTo(36, 12, 30, 18);
+    ctx.lineTo(-18, 18);
+    ctx.quadraticCurveTo(-29, 17, -32, 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = 3;
+    for (let lace = 0; lace < 3; lace += 1) {
+      ctx.beginPath();
+      ctx.moveTo(-9 + lace * 7, -12);
+      ctx.lineTo(-5 + lace * 7, -4);
+      ctx.stroke();
+    }
+    ctx.fillStyle = COLORS.red;
+    ctx.fillRect(-25, 17, 54, 5);
+    for (const studX of [-18, 0, 20]) {
+      ctx.beginPath();
+      ctx.roundRect(studX - 3, 21, 7, 6, 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(35, -22);
+    ctx.fillStyle = COLORS.white;
+    ctx.strokeStyle = COLORS.navy;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(0, 0, 13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COLORS.navy;
+    this.drawStarPath(ctx, 0, 0, 5.5, 2.8);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle = COLORS.navy;
+    ctx.font = '1000 16px "Avenir Next", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('KICK', 0, 46);
+    ctx.restore();
+  }
+
   drawScoreboard() {
     const { ctx, match } = this;
     ctx.save();
@@ -900,7 +894,7 @@ export class Game {
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.roundRect(434, 18, 412, 68, 24); ctx.fill(); ctx.stroke();
-    this.drawUsaShield(478, 52, 0.34);
+    this.drawUsaFlag(478, 52, 48, 30);
     this.drawFlag(802, 52, match.opponent.flag, 46, 30);
     ctx.fillStyle = COLORS.white;
     ctx.textAlign = 'center';
@@ -947,24 +941,41 @@ export class Game {
     let y;
     if (this.tutorial.step === 'move') {
       label = 'TAP THE GRASS TO RUN'; x = match.activePlayer.x + 110; y = match.activePlayer.y + 40;
-    } else if (this.tutorial.step === 'pass' && match.ball.owner?.team === 'usa') {
+    } else if (this.tutorial.step === 'pass' && match.ball.owner === match.activePlayer) {
       const teammate = match.usaPlayers.find((player) => player.role === 'field' && player !== match.activePlayer);
       if (!teammate) return;
       label = 'TAP A TEAMMATE TO PASS'; x = teammate.x; y = teammate.y;
-    } else if (this.tutorial.step === 'shoot' && match.ball.owner?.team === 'usa' && match.ball.x > FIELD.centerX - 80) {
-      label = 'TAP THE GOAL OR SWIPE THE BALL'; x = FIELD.right - 20; y = FIELD.centerY;
+    } else if (this.tutorial.step === 'shoot' && match.ball.owner === match.activePlayer) {
+      label = 'TAP KICK TO SHOOT'; x = KICK_BUTTON.x; y = KICK_BUTTON.y;
     } else return;
 
-    const bounce = Math.sin(this.time * 4.5) * 7;
     ctx.save();
-    ctx.globalAlpha = 0.92;
-    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.arc(x, y, 28 + Math.sin(this.time * 5) * 5, 0, Math.PI * 2); ctx.stroke();
-    ctx.translate(x + 20, y - 55 + bounce);
-    ctx.fillStyle = '#e7ae84'; ctx.strokeStyle = COLORS.navy; ctx.lineWidth = 3.5;
-    ctx.beginPath(); ctx.roundRect(-9, -18, 18, 42, 9); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.roundRect(-18, 8, 32, 24, 11); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = COLORS.gold; this.drawStarPath(ctx, 12, -21, 7, 3.5); ctx.fill();
+    for (let ring = 0; ring < 3; ring += 1) {
+      const phase = (this.time * 1.7 + ring / 3) % 1;
+      ctx.globalAlpha = (1 - phase) * 0.72;
+      ctx.strokeStyle = ring % 2 === 0 ? COLORS.gold : COLORS.white;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(x, y, 20 + phase * 42, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 0.95;
+    ctx.translate(x, y - 55 + Math.sin(this.time * 4.5) * 6);
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-20, -10);
+    ctx.lineTo(0, 10);
+    ctx.lineTo(20, -10);
+    ctx.stroke();
+    ctx.strokeStyle = COLORS.gold;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.fillStyle = COLORS.gold;
+    this.drawStarPath(ctx, 0, -25, 8, 4);
+    ctx.fill();
     ctx.restore();
 
     const textY = 112;
@@ -984,7 +995,7 @@ export class Game {
     ctx.fillText(result === 'win' ? 'USA WINS!' : result === 'draw' ? 'GREAT GAME!' : 'GREAT PLAYING, USA!', 640, 215);
     ctx.fillStyle = COLORS.white; ctx.font = '1000 82px "Avenir Next", system-ui, sans-serif';
     ctx.fillText(`${this.match?.score.usa ?? 0}  –  ${this.match?.score.opponent ?? 0}`, 640, 320);
-    this.drawUsaShield(500, 292, 0.62);
+    this.drawUsaFlag(500, 292, 88, 54);
     this.drawFlag(780, 292, OPPONENTS[this.selectedOpponent].flag, 86, 54);
 
     const pulse = 1 + Math.sin(this.time * 4) * 0.04;
@@ -1005,15 +1016,50 @@ export class Game {
     ctx.fillText('PLAY AGAIN', 640, 607);
   }
 
-  drawUsaShield(x, y, scale = 1) {
+  drawUsaFlag(x, y, width, height) {
     const { ctx } = this;
-    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
-    ctx.fillStyle = COLORS.white; ctx.strokeStyle = COLORS.navy; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.moveTo(-42, -48); ctx.lineTo(42, -48); ctx.lineTo(36, 22); ctx.quadraticCurveTo(0, 58, -36, 22); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = COLORS.red;
-    for (let i = 0; i < 3; i += 1) ctx.fillRect(-29 + i * 23, -9, 12, 49);
-    ctx.fillStyle = COLORS.navy; ctx.beginPath(); ctx.roundRect(-36, -42, 72, 30, 7); ctx.fill();
-    ctx.fillStyle = COLORS.gold; this.drawStarPath(ctx, 0, -27, 10, 5); ctx.fill();
+    ctx.save();
+    ctx.translate(x - width / 2, y - height / 2);
+    ctx.shadowColor = 'rgba(0,0,0,0.28)';
+    ctx.shadowBlur = Math.max(3, height * 0.08);
+    ctx.fillStyle = COLORS.white;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, width, height, Math.max(3, height * 0.1));
+    ctx.fill();
+    ctx.clip();
+    ctx.shadowBlur = 0;
+    const stripeHeight = height / 13;
+    ctx.fillStyle = '#d92f45';
+    for (let stripe = 0; stripe < 13; stripe += 2) {
+      ctx.fillRect(0, stripe * stripeHeight, width, stripeHeight + 0.5);
+    }
+    const cantonWidth = width * 0.43;
+    const cantonHeight = stripeHeight * 7;
+    ctx.fillStyle = '#173f86';
+    ctx.fillRect(0, 0, cantonWidth, cantonHeight);
+    ctx.fillStyle = COLORS.white;
+    const dotRadius = clamp(height * 0.025, 0.65, 1.6);
+    for (let row = 0; row < 4; row += 1) {
+      for (let column = 0; column < 5; column += 1) {
+        ctx.beginPath();
+        ctx.arc(
+          cantonWidth * (0.12 + column * 0.19),
+          cantonHeight * (0.16 + row * 0.23),
+          dotRadius,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+    ctx.save();
+    ctx.translate(x - width / 2, y - height / 2);
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth = Math.max(2, height * 0.055);
+    ctx.beginPath();
+    ctx.roundRect(0, 0, width, height, Math.max(3, height * 0.1));
+    ctx.stroke();
     ctx.restore();
   }
 

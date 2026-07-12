@@ -487,6 +487,26 @@ export class Game {
     ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     ctx.fillStyle = '#06182f';
     ctx.fillRect(0, 0, viewport.width, viewport.height);
+    if (this.stadiumImage.complete && this.stadiumImage.naturalWidth > 0) {
+      const imageScale = Math.max(
+        viewport.width / this.stadiumImage.naturalWidth,
+        viewport.height / this.stadiumImage.naturalHeight,
+      );
+      const drawWidth = this.stadiumImage.naturalWidth * imageScale;
+      const drawHeight = this.stadiumImage.naturalHeight * imageScale;
+      ctx.save();
+      ctx.globalAlpha = 0.34;
+      ctx.drawImage(
+        this.stadiumImage,
+        (viewport.width - drawWidth) / 2,
+        (viewport.height - drawHeight) / 2,
+        drawWidth,
+        drawHeight,
+      );
+      ctx.fillStyle = 'rgba(3, 20, 48, 0.44)';
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+      ctx.restore();
+    }
     ctx.translate(viewport.offsetX, viewport.offsetY);
     ctx.scale(viewport.scale, viewport.scale);
   }

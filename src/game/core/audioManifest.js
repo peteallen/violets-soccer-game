@@ -11,7 +11,7 @@ export const VOICE_CLIPS = Object.freeze({
   letsGoUsa: 'assets/voice/lets_go_usa.mp3',
   tapGrass: 'assets/voice/tap_grass.mp3',
   tapTeammate: 'assets/voice/tap_teammate.mp3',
-  tapGoal: 'assets/voice/tap_goal.mp3',
+  tapKick: 'assets/voice/tap_kick.mp3',
   greatPass: 'assets/voice/great_pass.mp3',
   goalUsa: 'assets/voice/goal_usa.mp3',
   greatSave: 'assets/voice/great_save.mp3',

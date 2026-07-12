@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { FIELD } from '../src/game/config.js';
-import { Match } from '../src/game/match/Match.js';
+import { Match, VIOLET_ID } from '../src/game/match/Match.js';
 
-const advance = (match, seconds, step = 1 / 60) => {
+const expectVioletControl = (match) => {
+  expect(match.activePlayerId).toBe(VIOLET_ID);
+  expect(match.activePlayer?.id).toBe(VIOLET_ID);
+  expect(match.usaPlayers.filter((player) => player.controlled).map((player) => player.id)).toEqual([VIOLET_ID]);
+};
+
+const advance = (match, seconds, step = 1 / 60, afterFrame = null) => {
   const frames = Math.ceil(seconds / step);
-  for (let frame = 0; frame < frames; frame += 1) match.update(step);
+  for (let frame = 0; frame < frames; frame += 1) {
+    match.update(step);
+    afterFrame?.(frame);
+  }
 };
 
 describe('Match', () => {
@@ -14,35 +23,115 @@ describe('Match', () => {
     expect(match.state).toBe('ready');
     expect(match.timeRemaining).toBe(300);
     expect(match.ball.owner?.team).toBe('usa');
-    expect(match.activePlayerId).toBe('usa-6');
+    expectVioletControl(match);
 
     match.start();
     match.update(1 / 60);
     expect(match.state).toBe('playing');
     expect(match.timeRemaining).toBeLessThan(300);
+    expectVioletControl(match);
   });
 
-  it('passes to a moving teammate and transfers control', () => {
+  it('lets a teammate receive and return Violet’s pass without moving control', () => {
     const match = new Match({ seed: 10 });
     match.start();
     const receiver = match.findPlayer('usa-11');
+    const violet = match.findPlayer(VIOLET_ID);
     const opponents = match.opponentPlayers.filter((player) => player.role === 'field');
-    receiver.x = 655;
+    receiver.x = 760;
     receiver.y = 245;
-    receiver.targetX = 700;
+    receiver.targetX = 805;
     receiver.targetY = 245;
     opponents.forEach((player, index) => {
-      player.x = 980;
-      player.y = 190 + index * 150;
+      player.x = FIELD.right - 35;
+      player.y = FIELD.top + 45 + index * 255;
       player.targetX = player.x;
       player.targetY = player.y;
     });
 
     expect(match.passTo(receiver.id)).toBe(true);
-    advance(match, 1.25);
+    expectVioletControl(match);
 
-    expect(match.ball.owner?.id).toBe(receiver.id);
-    expect(match.activePlayerId).toBe(receiver.id);
+    let sawTeammateReceive = false;
+    let sawReturnPass = false;
+    let sawVioletReceiveReturn = false;
+    let inspectedEventCount = 0;
+    for (let frame = 0; frame < 4 * 60 && !sawVioletReceiveReturn; frame += 1) {
+      match.update(1 / 60);
+      expectVioletControl(match);
+      if (match.ball.owner === receiver) sawTeammateReceive = true;
+      for (const event of match.events.slice(inspectedEventCount)) {
+        if (event.type === 'kick' && event.kind === 'pass' && event.playerId === receiver.id && event.receiverId === VIOLET_ID) {
+          sawReturnPass = true;
+        }
+      }
+      inspectedEventCount = match.events.length;
+      if (sawReturnPass && match.ball.owner === violet) sawVioletReceiveReturn = true;
+    }
+
+    expect(sawTeammateReceive).toBe(true);
+    expect(sawReturnPass).toBe(true);
+    expect(sawVioletReceiveReturn).toBe(true);
+    expectVioletControl(match);
+  });
+
+  it('keeps Violet selected during an opponent kickoff', () => {
+    const match = new Match({ seed: 11 });
+    match.start();
+    match.prepareKickoff('opponent');
+
+    expect(match.ball.owner?.id).toBe('opp-10');
+    expectVioletControl(match);
+    advance(match, 2, 1 / 60, () => expectVioletControl(match));
+  });
+
+  it('rolls a USA keeper catch specifically to Violet without changing control', () => {
+    const match = new Match({ seed: 13 });
+    match.start();
+    const keeper = match.findPlayer('usa-gk');
+    match.ball.release();
+    match.ball.x = keeper.x;
+    match.ball.y = keeper.y;
+    match.ball.vx = 120;
+    match.ball.vy = 0;
+    match.ball.lastTouchTeam = 'opponent';
+
+    match.makeSave(keeper);
+
+    expect(match.ball.owner).toBe(keeper);
+    expect(keeper.distributeToId).toBe(VIOLET_ID);
+    expectVioletControl(match);
+
+    let rollout = null;
+    for (let frame = 0; frame < 2 * 60 && !rollout; frame += 1) {
+      match.update(1 / 60);
+      expectVioletControl(match);
+      rollout = match.events.find((event) => event.type === 'kick' && event.kind === 'rollout');
+    }
+
+    expect(rollout).toMatchObject({ team: 'usa', playerId: 'usa-gk', receiverId: VIOLET_ID });
+    expect(match.ball.owner).toBeNull();
+    expect(match.ball.intendedReceiverId).toBe(VIOLET_ID);
+  });
+
+  it('shoots toward the open side of goal when Violet kicks', () => {
+    const match = new Match({ seed: 14 });
+    match.start();
+    const opponentKeeper = match.findPlayer('opp-gk');
+    opponentKeeper.y = FIELD.centerY - 70;
+
+    expect(match.shootAtOpenGoal()).toBe(true);
+
+    expect(match.ball.owner).toBeNull();
+    expect(match.ball.vx).toBeGreaterThan(0);
+    expect(match.ball.vy).toBeGreaterThan(0);
+    expect(match.events).toContainEqual(expect.objectContaining({
+      type: 'kick',
+      kind: 'shot',
+      team: 'usa',
+      playerId: VIOLET_ID,
+    }));
+    expectVioletControl(match);
   });
 
   it('does not allow an opponent to steal during USA receipt protection', () => {
@@ -79,6 +168,7 @@ describe('Match', () => {
     expect(match.state).toBe('playing');
     expect(match.score.usa).toBe(1);
     expect(match.ball.owner?.team).toBe('opponent');
+    expectVioletControl(match);
   });
 
   it('finishes honestly when the timer reaches zero', () => {
@@ -107,6 +197,7 @@ describe('Match', () => {
         }
       }
       match.update(1 / 60);
+      expectVioletControl(match);
       for (const player of match.players) {
         expect(Number.isFinite(player.x)).toBe(true);
         expect(Number.isFinite(player.y)).toBe(true);

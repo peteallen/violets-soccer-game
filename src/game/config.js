@@ -29,3 +29,64 @@ export const COLORS = Object.freeze({
   ink: '#071b3a',
 });
 
+export const MATCH = Object.freeze({
+  durationSeconds: 300,
+  playerRadius: 22,
+  ballRadius: 12,
+  usaControlledSpeed: 178,
+  usaAiSpeed: 142,
+  opponentSpeed: 126,
+  keeperSpeed: 155,
+  passSpeed: 485,
+  shotSpeed: 675,
+  opponentShotSpeed: 500,
+});
+
+export const TEAM_KITS = Object.freeze({
+  usa: {
+    shirt: '#f8fbff',
+    shoulder: '#163f86',
+    accent: '#e43b50',
+    shorts: '#17386f',
+    socks: '#e43b50',
+    outline: '#071b3a',
+    keeperShirt: '#7d4bd4',
+    keeperShorts: '#45287d',
+  },
+  brazil: {
+    shirt: '#ffd842',
+    shoulder: '#23834a',
+    accent: '#23834a',
+    shorts: '#2251a0',
+    socks: '#ffffff',
+    outline: '#123267',
+    keeperShirt: '#ef6e3f',
+    keeperShorts: '#8f301d',
+  },
+  netherlands: {
+    shirt: '#f47632',
+    shoulder: '#132f68',
+    accent: '#fff4dd',
+    shorts: '#132f68',
+    socks: '#f47632',
+    outline: '#081b3d',
+    keeperShirt: '#57bfa1',
+    keeperShorts: '#226c63',
+  },
+  mexico: {
+    shirt: '#198b58',
+    shoulder: '#f4f2e9',
+    accent: '#d53d42',
+    shorts: '#f4f2e9',
+    socks: '#d53d42',
+    outline: '#073c2d',
+    keeperShirt: '#f3be3e',
+    keeperShorts: '#765213',
+  },
+});
+
+export const OPPONENTS = Object.freeze([
+  { id: 'brazil', label: 'BRAZIL', kit: TEAM_KITS.brazil, flag: ['#229447', '#ffd83d', '#2350a3'] },
+  { id: 'netherlands', label: 'NETHERLANDS', kit: TEAM_KITS.netherlands, flag: ['#ae1c28', '#ffffff', '#21468b'] },
+  { id: 'mexico', label: 'MEXICO', kit: TEAM_KITS.mexico, flag: ['#128a52', '#ffffff', '#d13d45'] },
+]);
